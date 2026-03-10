@@ -81,12 +81,12 @@ def lese_sheets_daten():
     }
 
     # Leistungen — alle Zeilen ab Zeile 2
-    leistungen_sheet = wb.worksheet("Leistungen")
+    leistungen_sheet = wb.worksheet("🔧 Leistungen")
     leistungen_rows = leistungen_sheet.get_all_values()[1:]  # ohne Header
     leistungen_text = "\n".join(["|".join(row) for row in leistungen_rows if any(row)])
 
     # Materialpreise — alle Zeilen ab Zeile 2
-    material_sheet = wb.worksheet("Materialpreise")
+    material_sheet = wb.worksheet("🎨 Materialpreise")
     material_rows = material_sheet.get_all_values()[1:]  # ohne Header
     material_text = "\n".join(["|".join(row) for row in material_rows if any(row)])
 
@@ -151,7 +151,7 @@ def speichere_angebot(angebot: dict) -> int:
     gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
 
     # Angebote-Sheet — Kopfzeile
-    angebote_sheet = wb.worksheet("Angebote")
+    angebote_sheet = wb.worksheet("📄 Angebote")
     kopf = [
         "",                                      # A — Angebots-ID (leer, auto)
         "",                                      # B — Angebotsnummer
@@ -177,7 +177,7 @@ def speichere_angebot(angebot: dict) -> int:
     angebots_zeile = len(angebote_sheet.get_all_values())  # Zeilennummer
 
     # Angebotspositionen-Sheet
-    positionen_sheet = wb.worksheet("Angebotspositionen")
+    positionen_sheet = wb.worksheet("📝 Angebotspositionen")
     for pos in angebot.get("positionen", []):
         zeile = [
             "",                               # A — Position-ID

@@ -141,7 +141,8 @@ Beginne mit {{ und ende mit }}."""
             raw = raw[4:]
         raw = raw.strip()
 
-    return json.loads(raw)
+  log.info(f"Claude JSON: {raw}")  
+  return json.loads(raw)
 
 # ── Schritt 4: In Google Sheets schreiben ─────────────────────────────────────
 def speichere_angebot(angebot: dict) -> int:

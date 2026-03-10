@@ -1,0 +1,5 @@
+python-telegram-bot==20.7
+anthropic
+gspread
+google-auth
+requests

@@ -1,5 +1,5 @@
 """
-Maler-Agent — Telegram AI Angebots-Generator
+Maler-Agent — Telegram AI Angebots-Generator 
 Mit verbessertem Gesprächsgedächtnis und gruppierten Rückfragen
 """
 

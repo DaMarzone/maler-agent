@@ -112,11 +112,33 @@ LEISTUNGSKATALOG (Format: ID|Art|Kategorie|Einheit|Std_h|Material-ID|Schwierigke
 MATERIALPREISE (Format: ID|Bezeichnung|Kategorie|Einheit|EK-Preis|VK-Preis):
 {material}
 
-Erstelle ein Angebot als JSON mit:
-positionen[] (pos_nr, leistungs_id, beschreibung, einheit, menge, gesamtstunden, materialkosten, arbeitskosten, positionspreis_netto),
-gesamtstunden, arbeitskosten, materialkosten, anfahrt,
-zwischensumme_netto, gewinnaufschlag_betrag, angebotspreis_netto,
-mwst_betrag, brutto, einleitungstext, betreff
+Antworte NUR mit diesem exakten JSON-Format, keine anderen Felder:
+{{
+  "betreff": "...",
+  "einleitungstext": "...",
+  "gesamtstunden": 0.0,
+  "arbeitskosten": 0.0,
+  "materialkosten": 0.0,
+  "anfahrt": 0.0,
+  "zwischensumme_netto": 0.0,
+  "gewinnaufschlag_betrag": 0.0,
+  "angebotspreis_netto": 0.0,
+  "mwst_betrag": 0.0,
+  "brutto": 0.0,
+  "positionen": [
+    {{
+      "pos_nr": 1,
+      "leistungs_id": "L001",
+      "beschreibung": "...",
+      "einheit": "m²",
+      "menge": 0.0,
+      "gesamtstunden": 0.0,
+      "materialkosten": 0.0,
+      "arbeitskosten": 0.0,
+      "positionspreis_netto": 0.0
+    }}
+  ]
+}}
 
 Beginne mit {{ und ende mit }}."""
 

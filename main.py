@@ -43,7 +43,9 @@ GROQ_API_KEY       = os.environ["GROQ_API_KEY"]
 GOOGLE_SHEET_ID    = os.environ["GOOGLE_SHEET_ID"]
 GOOGLE_CREDENTIALS = os.environ["GOOGLE_CREDENTIALS"]
 
+# Gesprächsspeicher + letzte Angebotsnummer pro Chat
 gespraech = {}
+letztes_angebot = {}  # { chat_id: "ANG-2026-X" }
 
 # ── Schriftart mit Umlaut-Unterstützung registrieren ─────────────────────────
 def registriere_schriften():
@@ -382,10 +384,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in gespraech:
         gespraech[chat_id] = []
 
-    # ── Freigabe-Befehl abfangen (auch mitten im Satz) ──
+    # ── Freigabe-Befehl abfangen (mit oder ohne Nummer) ──
     _freigabe_match = re.search(r'freigeben\s+(ANG-\d{4}-\d+)', nutzer_text, re.IGNORECASE)
+    _freigabe_wort = re.search(r'freigeben|freigabe|passt so|bitte freigeben', nutzer_text, re.IGNORECASE)
     if _freigabe_match:
         ang_nr = _freigabe_match.group(1).upper()
+    elif _freigabe_wort and chat_id in letztes_angebot:
+        ang_nr = letztes_angebot[chat_id]
+    else:
+        ang_nr = None
+
+    if ang_nr:
         await update.message.reply_text("⏳ Setze Status auf Freigegeben...")
         try:
             if freigabe_angebot(ang_nr):
@@ -418,6 +427,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             heute = datetime.now().strftime("%d.%m.%Y")
             gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
             gespraech[chat_id] = []
+            letztes_angebot[chat_id] = ang_nr
 
             await update.message.reply_text(
                 f"✅ Angebot erstellt — Status: Entwurf\n\n"
@@ -425,7 +435,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Nr.: {ang_nr}\n\n"
                 f"Netto:  {eur(antwort.get('angebotspreis_netto',0))} EUR\n"
                 f"Brutto: {eur(antwort.get('brutto',0))} EUR\n\n"
-                f"Zum Freigeben antworte mit:\nfreigeben {ang_nr}"
+                f"Zum Freigeben antworte mit: freigeben\n\n"
+                f"⚠️ Entwürfe werden nach 90 Tagen automatisch gelöscht. "
+                f"Freigegebene Angebote werden 10 Jahre aufbewahrt."
             )
             await update.message.reply_text("📄 Erstelle PDF...")
             pdf_buf = erstelle_pdf(antwort, betrieb, ang_nr, heute, gueltig)

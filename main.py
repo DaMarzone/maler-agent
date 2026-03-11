@@ -810,8 +810,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             # Nummer nachschreiben
             gc = get_sheet_client()
             gc.open_by_key(GOOGLE_SHEET_ID).worksheet("📄 Angebote").update_cell(zeile, 2, ang_nr)
-            gespraech[chat_id] = []
             letztes_angebot[chat_id] = ang_nr
+
+            # Gesprächsverlauf NICHT löschen — Meister kann noch Korrekturen wünschen
+            # Angebot als Assistant-Nachricht im Verlauf vermerken damit Claude den Kontext kennt
+            gespraech[chat_id].append({
+                "role": "assistant",
+                "content": f"Ich habe Angebot {ang_nr} erstellt (Netto: {eur(antwort.get('angebotspreis_netto',0))} EUR). "
+                           f"Falls du Änderungen wünschst, beschreibe sie — ich erstelle dann ein neues Angebot. "
+                           f"Oder antworte mit 'freigeben' um das Angebot freizugeben."
+            })
 
             await update.message.reply_text(
                 f"✅ Angebot erstellt — Status: Entwurf\n\n"
@@ -822,7 +830,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🔧 Kalkulation: {betrieb.get('stundensatz','-')} €/Std · "
                 f"Aufschlag {betrieb.get('gewinnaufschlag','-')}% · "
                 f"Anfahrt {betrieb.get('anfahrtspauschale','-')} €\n\n"
-                f"Zum Freigeben antworte mit: freigeben\n\n"
+                f"✏️ Anpassungen gewünscht? Beschreibe einfach was geändert werden soll.\n"
+                f"✅ Passt so? Antworte mit: freigeben\n\n"
                 f"⚠️ Entwürfe werden nach 90 Tagen automatisch gelöscht. "
                 f"Freigegebene Angebote werden 10 Jahre aufbewahrt."
             )

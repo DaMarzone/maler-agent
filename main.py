@@ -195,6 +195,14 @@ def freigabe_angebot(ang_nr: str) -> bool:
         sheet.update_cell(zelle.row, 5, "Freigegeben")
     return True
 
+def speichere_feedback(chat_id: int, typ: str, nachricht: str):
+    """Schreibt Feedback/Problem in den Sheet-Tab Feedback."""
+    gc = get_sheet_client()
+    wb = gc.open_by_key(GOOGLE_SHEET_ID)
+    sheet = wb.worksheet("📬 Feedback")
+    heute = datetime.now().strftime("%d.%m.%Y %H:%M")
+    sheet.append_row([heute, str(chat_id), typ, nachricht, "offen"])
+
 # ── Groq Transkription ────────────────────────────────────────────────────────
 def transkribiere_audio(file_bytes: bytes, filename: str) -> str:
     r = requests.post(
@@ -645,6 +653,39 @@ async def verarbeite_stammdaten_aendern(update: Update, chat_id: int, text: str)
     except Exception as e:
         await update.message.reply_text(f"❌ Fehler: {e}")
 
+# ── Feedback-Flow ────────────────────────────────────────────────────────────
+TYP_MAP = {"1": "Problem", "2": "Idee", "3": "Frage"}
+
+async def verarbeite_feedback(update: Update, chat_id: int, text: str):
+    modus = chat_modus.get(chat_id)
+
+    if modus == "feedback_typ":
+        typ = TYP_MAP.get(text.strip(), None)
+        if not typ:
+            await update.message.reply_text("Bitte antworte mit 1 (Problem), 2 (Idee) oder 3 (Frage).")
+            return
+        chat_modus[chat_id] = f"feedback_{typ}"
+        await update.message.reply_text(
+            f"Okay, *{typ}* — beschreibe es kurz in einer Nachricht:",
+            parse_mode="Markdown"
+        )
+        return
+
+    # Nachricht empfangen → speichern
+    for prefix in ["feedback_Problem", "feedback_Idee", "feedback_Frage"]:
+        if modus == prefix:
+            typ = prefix.replace("feedback_", "")
+            try:
+                speichere_feedback(chat_id, typ, text)
+                chat_modus[chat_id] = "normal"
+                await update.message.reply_text(
+                    f"✅ Danke! Dein {typ} wurde gespeichert und wird geprüft."
+                )
+                await zeige_menu(update)
+            except Exception as e:
+                await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
+            return
+
 # ── /start Handler ────────────────────────────────────────────────────────────
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -682,6 +723,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if modus in ("onboarding", "onboarding_wahl", "onboarding_express"):
         await verarbeite_onboarding(update, chat_id, nutzer_text)
         return
+    if modus and modus.startswith("feedback"):
+        await verarbeite_feedback(update, chat_id, nutzer_text)
+        return
     if modus == "stammdaten_aendern":
         await verarbeite_stammdaten_aendern(update, chat_id, nutzer_text)
         return
@@ -704,11 +748,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await starte_stammdaten_aendern(update, chat_id)
             return
         elif text_lower in ["4", "hilfe", "help"]:
+            chat_modus[chat_id] = "feedback_typ"
             await update.message.reply_text(
-                "🆘 *Hilfe & Support*\n\n"
-                "Bei Problemen oder Fragen schreib eine E-Mail an:\n"
-                "support@maler-agent.de\n\n"
-                "Oder beschreibe dein Problem hier — ich leite es weiter.",
+                "🆘 *Hilfe & Feedback*\n\n"
+                "Was möchtest du melden?\n\n"
+                "1️⃣ Problem / Fehler\n"
+                "2️⃣ Idee / Verbesserungsvorschlag\n"
+                "3️⃣ Frage\n\n"
+                "Antworte mit 1, 2 oder 3:",
                 parse_mode="Markdown"
             )
             return

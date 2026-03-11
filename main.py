@@ -300,9 +300,7 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     # ── Summentabelle ──
     mwst_satz = betrieb.get("mwst","19")
     summen_data = [
-        [Paragraph("Zwischensumme:", normal),      Paragraph(f"{eur(angebot.get('zwischensumme_netto',0))} EUR", right)],
         [Paragraph("Anfahrt:", normal),             Paragraph(f"{eur(angebot.get('anfahrt',0))} EUR", right)],
-        [Paragraph("Gewinnaufschlag:", normal),     Paragraph(f"{eur(angebot.get('gewinnaufschlag_betrag',0))} EUR", right)],
         [Paragraph("Nettobetrag:", normal),         Paragraph(f"{eur(angebot.get('angebotspreis_netto',0))} EUR", right)],
         [Paragraph(f"zzgl. {mwst_satz}% MwSt:", normal), Paragraph(f"{eur(angebot.get('mwst_betrag',0))} EUR", right)],
         [Paragraph("<b>Gesamtbetrag brutto:</b>", bold), Paragraph(f"<b>{eur(angebot.get('brutto',0))} EUR</b>", bold)],
@@ -344,6 +342,19 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     buf.seek(0)
     return buf
 
+# ── Freigabe ──────────────────────────────────────────────────────────────────
+def freigabe_angebot(ang_nr: str) -> bool:
+    """Setzt Status im Angebote-Sheet auf 'Freigegeben'."""
+    gc = get_sheet_client()
+    wb = gc.open_by_key(GOOGLE_SHEET_ID)
+    sheet = wb.worksheet("📄 Angebote")
+    zellen = sheet.findall(ang_nr)
+    if not zellen:
+        return False
+    for zelle in zellen:
+        sheet.update_cell(zelle.row, 5, "Freigegeben")  # Spalte E = Status
+    return True
+
 # ── Telegram Handler ──────────────────────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -369,6 +380,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if chat_id not in gespraech:
         gespraech[chat_id] = []
+
+    # ── Freigabe-Befehl abfangen ──
+    if nutzer_text.lower().startswith("freigeben "):
+        ang_nr = nutzer_text.split(" ", 1)[1].strip().upper()
+        await update.message.reply_text("⏳ Setze Status auf Freigegeben...")
+        try:
+            if freigabe_angebot(ang_nr):
+                await update.message.reply_text(f"✅ Angebot {ang_nr} wurde freigegeben.")
+            else:
+                await update.message.reply_text(f"❌ Angebot {ang_nr} nicht gefunden. Bitte Nummer prüfen.")
+        except Exception as e:
+            log.error(f"Freigabe-Fehler: {e}")
+            await update.message.reply_text(f"❌ Fehler bei Freigabe: {e}")
+        return
+
     gespraech[chat_id].append({"role": "user", "content": nutzer_text})
     await update.message.reply_text("⚙️ Prüfe Anfrage...")
 

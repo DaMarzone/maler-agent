@@ -6,6 +6,7 @@ Fixes: Umlaute in PDF und Telegram, Anrede Herr/Frau
 import os
 import json
 import logging
+import re
 import requests
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -381,9 +382,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id not in gespraech:
         gespraech[chat_id] = []
 
-    # ── Freigabe-Befehl abfangen ──
-    if nutzer_text.lower().startswith("freigeben "):
-        ang_nr = nutzer_text.split(" ", 1)[1].strip().upper()
+    # ── Freigabe-Befehl abfangen (auch mitten im Satz) ──
+    _freigabe_match = re.search(r'freigeben\s+(ANG-\d{4}-\d+)', nutzer_text, re.IGNORECASE)
+    if _freigabe_match:
+        ang_nr = _freigabe_match.group(1).upper()
         await update.message.reply_text("⏳ Setze Status auf Freigegeben...")
         try:
             if freigabe_angebot(ang_nr):
@@ -394,6 +396,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             log.error(f"Freigabe-Fehler: {e}")
             await update.message.reply_text(f"❌ Fehler bei Freigabe: {e}")
         return
+    
 
     gespraech[chat_id].append({"role": "user", "content": nutzer_text})
     await update.message.reply_text("⚙️ Prüfe Anfrage...")

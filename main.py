@@ -41,6 +41,20 @@ letztes_angebot = {}  # { chat_id: "ANG-2026-X" }
 chat_modus     = {}   # { chat_id: "normal" | "onboarding" | "stammdaten_aendern" }
 onboarding_data = {}  # { chat_id: { schritt: int, daten: {} } }
 
+# Standardwerte für Express-Onboarding
+EXPRESS_DEFAULTS = {
+    "stundensatz":       "55",
+    "mwst":              "19",
+    "gewinnaufschlag":   "15",
+    "mindestauftrag":    "150",
+    "anfahrtspauschale": "25",
+    "strasse":           "",
+    "plz":               "",
+    "ort":               "",
+    "telefon":           "",
+    "email":             "",
+}
+
 # Onboarding-Felder der Reihe nach
 ONBOARDING_FELDER = [
     ("betriebsname",      "Wie lautet der Name deines Betriebs?"),
@@ -398,15 +412,66 @@ async def zeige_stammdaten(update: Update):
 
 # ── Onboarding ────────────────────────────────────────────────────────────────
 async def starte_onboarding(update: Update, chat_id: int):
-    chat_modus[chat_id] = "onboarding"
+    chat_modus[chat_id] = "onboarding_wahl"
     onboarding_data[chat_id] = {"schritt": 0, "daten": {}}
     await update.message.reply_text(
         "👋 Willkommen beim Maler-Agent!\n\n"
-        "Ich richte deinen Betrieb jetzt ein. Das dauert nur 2 Minuten.\n\n"
-        f"Frage 1 von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[0][1]}"
+        "Wie möchtest du starten?\n\n"
+        "⚡ *1 — Express-Start*\n"
+        "Nur Betriebsname eingeben, Rest wird mit Standardwerten gefüllt:\n"
+        "• Stundensatz: 55 €/Std\n"
+        "• Gewinnaufschlag: 15 %\n"
+        "• MwSt: 19 %\n"
+        "• Anfahrt: 25 €\n"
+        "• Mindestauftrag: 150 €\n"
+        "_(Alle Werte kannst du später jederzeit ändern)_\n\n"
+        "📋 *2 — Vollständiges Setup*\n"
+        "Alle 11 Felder Schritt für Schritt eingeben (~2 Min)\n\n"
+        "Antworte mit *1* oder *2*:",
+        parse_mode="Markdown"
     )
 
 async def verarbeite_onboarding(update: Update, chat_id: int, text: str):
+    # Wahl: Express oder Vollständig
+    if chat_modus.get(chat_id) == "onboarding_wahl":
+        if text.strip() == "1":
+            # Express: nur Betriebsname fragen
+            chat_modus[chat_id] = "onboarding_express"
+            await update.message.reply_text(
+                "⚡ *Express-Start*\n\nWie lautet der Name deines Betriebs?",
+                parse_mode="Markdown"
+            )
+        elif text.strip() == "2":
+            # Vollständiges Setup
+            chat_modus[chat_id] = "onboarding"
+            await update.message.reply_text(
+                f"📋 Vollständiges Setup\n\n"
+                f"Frage 1 von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[0][1]}"
+            )
+        else:
+            await update.message.reply_text("Bitte antworte mit *1* (Express) oder *2* (Vollständig).", parse_mode="Markdown")
+        return
+
+    # Express: nur Betriebsname
+    if chat_modus.get(chat_id) == "onboarding_express":
+        betriebsname = text.strip()
+        daten = {"betriebsname": betriebsname, **EXPRESS_DEFAULTS}
+        await update.message.reply_text("⏳ Speichere Stammdaten...")
+        try:
+            schreibe_stammdaten(daten)
+            chat_modus[chat_id] = "normal"
+            onboarding_data.pop(chat_id, None)
+            await update.message.reply_text(
+                f"🎉 *{betriebsname}* ist startklar!\n\n"
+                f"Standardwerte sind gesetzt. Du kannst sofort Angebote erstellen.\n"
+                f"Passe deine Daten jederzeit über *Menü → 3* an.",
+                parse_mode="Markdown"
+            )
+            await zeige_menu(update)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
+        return
+
     state = onboarding_data[chat_id]
     schritt = state["schritt"]
     feld = ONBOARDING_FELDER[schritt][0]
@@ -577,7 +642,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Onboarding läuft ──
     modus = chat_modus.get(chat_id, "normal")
-    if modus == "onboarding":
+    if modus in ("onboarding", "onboarding_wahl", "onboarding_express"):
         await verarbeite_onboarding(update, chat_id, nutzer_text)
         return
     if modus == "stammdaten_aendern":

@@ -45,7 +45,7 @@ onboarding_data = {}  # { chat_id: { schritt: int, daten: {} } }
 EXPRESS_DEFAULTS = {
     "stundensatz":       "55",
     "mwst":              "19",
-    "gewinnaufschlag":   "15",
+    "gewinnaufschlag":   "10",
     "mindestauftrag":    "150",
     "anfahrtspauschale": "25",
     "strasse":           "",
@@ -60,7 +60,7 @@ ONBOARDING_FELDER = [
     ("betriebsname",      "Wie lautet der Name deines Betriebs?"),
     ("stundensatz",       "Was ist dein Stundensatz in EUR (netto)? z.B. 55"),
     ("mwst",              "Welcher MwSt-Satz gilt? (normal: 19)"),
-    ("gewinnaufschlag",   "Welchen Gewinnaufschlag möchtest du in %? z.B. 15"),
+    ("gewinnaufschlag",   "Welchen Gewinnaufschlag möchtest du in %? z.B. 10"),
     ("mindestauftrag",    "Was ist dein Mindestauftragswert in EUR? z.B. 150"),
     ("anfahrtspauschale", "Wie hoch ist deine Anfahrtspauschale in EUR? z.B. 25"),
     ("strasse",           "Straße und Hausnummer deines Betriebs?"),
@@ -118,14 +118,33 @@ def lese_sheets_daten():
     }
     leistungen_rows = wb.worksheet("🔧 Leistungen").get_all_values()[1:]
     leistungen_text = "\n".join(["|".join(r) for r in leistungen_rows if any(r)])
-    material_rows = wb.worksheet("🎨 Materialpreise").get_all_values()[1:]
-    material_text = "\n".join(["|".join(r) for r in material_rows if any(r)])
-    return betrieb, leistungen_text, material_text
+
+    # Materialpreise: VK-Preis aus EK × (1 + Aufschlag) selbst berechnen
+    # Spalten: ID|Bezeichnung|Kategorie|Einheit|EK-Preis|Aufschlag(%)|VK-Formel|Verbrauch
+    material_zeilen = []
+    for r in wb.worksheet("🎨 Materialpreise").get_all_values()[1:]:
+        if not any(r):
+            continue
+        try:
+            ek   = float(str(r[4]).replace(",", ".")) if len(r) > 4 and r[4] else 0
+            aufschlag = float(str(r[5]).replace(",", ".").replace("%","")) if len(r) > 5 and r[5] else 0
+            vk   = round(ek * (1 + aufschlag), 4)
+            verbrauch = r[7] if len(r) > 7 else ""
+            material_zeilen.append(f"{r[0]}|{r[1]}|{r[2]}|{r[3]}|{ek}|{aufschlag}|{vk}|{verbrauch}")
+        except:
+            material_zeilen.append("|".join(r))
+    material_text = "\n".join(material_zeilen)
+
+    # Schwierigkeitsfaktoren laden
+    sf_rows = wb.worksheet("📊 Schwierigkeitsfaktoren").get_all_values()[1:]
+    sf_text = "\n".join(["|".join(r) for r in sf_rows if any(r)])
+
+    return betrieb, leistungen_text, material_text, sf_text
 
 def ist_onboarding_noetig() -> bool:
     """Prüft ob Betriebsstamm noch leer ist."""
     try:
-        betrieb, _, _ = lese_sheets_daten()
+        betrieb, _, _, _ = lese_sheets_daten()
         return not betrieb.get("betriebsname", "").strip()
     except:
         return True
@@ -204,7 +223,7 @@ def parse_json_robust(raw: str) -> dict:
     return json.loads(raw)
 
 # ── Claude API ────────────────────────────────────────────────────────────────
-def frage_claude(verlauf: list, betrieb: dict, leistungen: str, material: str) -> dict:
+def frage_claude(verlauf: list, betrieb: dict, leistungen: str, material: str, sf: str) -> dict:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
     system = f"""Du bist ein Kalkulationsassistent für Malerbetriebe.
 
@@ -216,11 +235,29 @@ MwSt-Satz: {betrieb['mwst']} %
 Anfahrtspauschale: {betrieb['anfahrtspauschale']} EUR
 Mindestauftragswert: {betrieb['mindestauftrag']} EUR
 
-LEISTUNGSKATALOG (Format: ID|Art|Kategorie|Einheit|Std_h|Material-ID|Schwierigkeit):
+LEISTUNGSKATALOG (Format: ID|Art|Kategorie|Einheit|Std_h|Material-ID|SF-Basis):
 {leistungen}
 
-MATERIALPREISE (Format: ID|Bezeichnung|Kategorie|Einheit|EK-Preis|VK-Preis):
+MATERIALPREISE (Format: ID|Bezeichnung|Kategorie|Einheit|EK-Preis|Aufschlag|VK-Preis|Verbrauch_pro_m2):
+Verwende immer den VK-Preis (Spalte 7) für die Kalkulation, NICHT den EK-Preis.
 {material}
+
+SCHWIERIGKEITSFAKTOREN (Format: ID|Bezeichnung|Multiplikator|Beschreibung):
+Wähle den passenden Schwierigkeitsfaktor anhand der Auftragsbeschreibung.
+Standard (SF01, Multiplikator 1.0) wenn keine besonderen Umstände erwähnt werden.
+Der Faktor wird auf die Stunden einer Position angewendet.
+{sf}
+
+KALKULATIONSREGELN:
+1. Stunden = Menge × Std_h_aus_Katalog × Schwierigkeitsfaktor
+2. Arbeitskosten = Stunden × Stundensatz
+3. Materialkosten = Menge × Verbrauch_pro_m2 × VK-Preis (aus Materialpreise-Sheet)
+4. Positionspreis = Arbeitskosten + Materialkosten
+5. Zwischensumme = Summe aller Positionspreise + Anfahrt
+6. Gewinnaufschlag_Betrag = Zwischensumme × (Gewinnaufschlag% / 100)
+7. Angebotspreis_netto = Zwischensumme + Gewinnaufschlag_Betrag
+8. MwSt = Angebotspreis_netto × (MwSt% / 100)
+9. Brutto = Angebotspreis_netto + MwSt
 
 WICHTIG - GEDÄCHTNIS:
 Lies den GESAMTEN Gesprächsverlauf. Extrahiere alle bereits genannten Informationen.
@@ -393,7 +430,7 @@ async def zeige_menu(update: Update):
 
 async def zeige_stammdaten(update: Update):
     try:
-        betrieb, _, _ = lese_sheets_daten()
+        betrieb, _, _, _ = lese_sheets_daten()
         text = (
             f"📋 *Deine Stammdaten*\n\n"
             f"🏢 Betrieb: {betrieb.get('betriebsname','-')}\n"
@@ -541,7 +578,7 @@ async def starte_stammdaten_aendern(update: Update, chat_id: int):
     chat_modus[chat_id] = "stammdaten_aendern"
     betrieb_text = ""
     try:
-        betrieb, _, _ = lese_sheets_daten()
+        betrieb, _, _, _ = lese_sheets_daten()
         betrieb_text = (
             f"• Betriebsname: {betrieb.get('betriebsname','-')}\n"
             f"• Stundensatz: {betrieb.get('stundensatz','-')} EUR\n"
@@ -568,7 +605,7 @@ async def starte_stammdaten_aendern(update: Update, chat_id: int):
 async def verarbeite_stammdaten_aendern(update: Update, chat_id: int, text: str):
     await update.message.reply_text("⏳ Verarbeite Änderung...")
     try:
-        betrieb, _, _ = lese_sheets_daten()
+        betrieb, _, _, _ = lese_sheets_daten()
         ergebnis = erkenne_stammdaten_aenderung(text, betrieb)
         if not ergebnis:
             await update.message.reply_text(
@@ -707,8 +744,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("⚙️ Prüfe Anfrage...")
 
     try:
-        betrieb, leistungen, material = lese_sheets_daten()
-        antwort = frage_claude(gespraech[chat_id], betrieb, leistungen, material)
+        betrieb, leistungen, material, sf = lese_sheets_daten()
+        antwort = frage_claude(gespraech[chat_id], betrieb, leistungen, material, sf)
 
         if antwort.get("status") == "rueckfrage":
             frage = antwort.get("frage","Kannst du die Anfrage präzisieren?")

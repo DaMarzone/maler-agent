@@ -292,18 +292,27 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
 
     story.append(Paragraph("<b>Leistungsübersicht</b>", bold))
     story.append(Spacer(1, 0.2*cm))
-    pos_rows = [[Paragraph("<b>Pos.</b>", bold), Paragraph("<b>Leistungsbeschreibung</b>", bold),
-                 Paragraph("<b>Einheit</b>", bold), Paragraph("<b>Menge</b>", bold),
-                 Paragraph("<b>Preis (EUR)</b>", bold)]]
+    pos_rows = [[
+        Paragraph("<b>Pos.</b>", bold),
+        Paragraph("<b>Leistungsbeschreibung</b>", bold),
+        Paragraph("<b>Einheit</b>", bold),
+        Paragraph("<b>Menge</b>", bold),
+        Paragraph("<b>EP (EUR)</b>", bold),
+        Paragraph("<b>GP (EUR)</b>", bold),
+    ]]
     for pos in angebot.get("positionen", []):
+        menge = float(pos.get("menge", 0) or 0)
+        gp    = float(pos.get("positionspreis_netto", 0) or 0)
+        ep    = round(gp / menge, 2) if menge else 0
         pos_rows.append([
             Paragraph(str(pos.get("pos_nr","")), normal),
             Paragraph(pos.get("beschreibung",""), normal),
             Paragraph(pos.get("einheit",""), normal),
             Paragraph(str(pos.get("menge","")), normal),
-            Paragraph(eur(pos.get("positionspreis_netto",0)), right),
+            Paragraph(eur(ep), right),
+            Paragraph(eur(gp), right),
         ])
-    pos_table = Table(pos_rows, colWidths=[1*cm, W*0.5, 2*cm, 2*cm, 2.5*cm])
+    pos_table = Table(pos_rows, colWidths=[1*cm, W*0.42, 1.8*cm, 1.6*cm, 2.1*cm, 2.1*cm])
     pos_table.setStyle(TableStyle([
         ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#2E5D8E")),
         ("TEXTCOLOR",(0,0),(-1,0),colors.white),
@@ -427,53 +436,93 @@ async def verarbeite_onboarding(update: Update, chat_id: int, text: str):
         except Exception as e:
             await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
 
-# ── Stammdaten ändern ─────────────────────────────────────────────────────────
+# ── Stammdaten ändern (Einzelfeld via Claude) ────────────────────────────────
+STAMMDATEN_FELDER_MAP = {
+    "betriebsname": "A2", "stundensatz": "B2", "mwst": "C2",
+    "gewinnaufschlag": "D2", "mindestauftrag": "E2", "anfahrtspauschale": "F2",
+    "strasse": "G2", "plz": "H2", "ort": "I2", "telefon": "J2", "email": "K2",
+}
+
+def erkenne_stammdaten_aenderung(text: str, betrieb: dict) -> dict | None:
+    """Nutzt Claude um zu erkennen welches Feld geändert werden soll."""
+    client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+    prompt = f"""Der Nutzer möchte Stammdaten ändern. Erkenne welches Feld geändert werden soll und welcher neue Wert gewünscht wird.
+
+Aktuelle Stammdaten:
+{json.dumps(betrieb, ensure_ascii=False)}
+
+Verfügbare Felder: betriebsname, stundensatz, mwst, gewinnaufschlag, mindestauftrag, anfahrtspauschale, strasse, plz, ort, telefon, email
+
+Nutzernachricht: "{text}"
+
+Antworte NUR mit JSON: {{"feld": "feldname", "wert": "neuer_wert"}}
+Falls keine eindeutige Änderung erkennbar: {{"feld": null, "wert": null}}"""
+    try:
+        msg = client.messages.create(
+            model="claude-sonnet-4-6", max_tokens=100,
+            messages=[{"role": "user", "content": prompt}]
+        )
+        return parse_json_robust(msg.content[0].text)
+    except:
+        return None
+
 async def starte_stammdaten_aendern(update: Update, chat_id: int):
     chat_modus[chat_id] = "stammdaten_aendern"
-    onboarding_data[chat_id] = {"schritt": 0, "daten": {}}
-    # Aktuelle Werte vorab laden als Standardwerte
+    betrieb_text = ""
     try:
         betrieb, _, _ = lese_sheets_daten()
-        onboarding_data[chat_id]["aktuell"] = betrieb
+        betrieb_text = (
+            f"• Betriebsname: {betrieb.get('betriebsname','-')}\n"
+            f"• Stundensatz: {betrieb.get('stundensatz','-')} EUR\n"
+            f"• MwSt: {betrieb.get('mwst','-')} %\n"
+            f"• Gewinnaufschlag: {betrieb.get('gewinnaufschlag','-')} %\n"
+            f"• Mindestauftrag: {betrieb.get('mindestauftrag','-')} EUR\n"
+            f"• Anfahrt: {betrieb.get('anfahrtspauschale','-')} EUR\n"
+            f"• Straße: {betrieb.get('strasse','-')}\n"
+            f"• PLZ: {betrieb.get('plz','-')}\n"
+            f"• Ort: {betrieb.get('ort','-')}\n"
+            f"• Telefon: {betrieb.get('telefon','-')}\n"
+            f"• E-Mail: {betrieb.get('email','-')}"
+        )
     except:
-        onboarding_data[chat_id]["aktuell"] = {}
-    aktuell = onboarding_data[chat_id]["aktuell"].get(ONBOARDING_FELDER[0][0], "")
+        pass
     await update.message.reply_text(
         f"✏️ *Stammdaten ändern*\n\n"
-        f"Ich gehe alle Felder durch. Antworte mit dem neuen Wert oder schicke *–* um den aktuellen Wert zu behalten.\n\n"
-        f"Frage 1 von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[0][1]}\n"
-        f"_(Aktuell: {aktuell or 'leer'})_",
+        f"Aktuelle Werte:\n{betrieb_text}\n\n"
+        f"Sag mir einfach was du ändern möchtest, z.B.:\n"
+        f"_'Stundensatz auf 60€'_ oder _'E-Mail auf neu@firma.de'_",
         parse_mode="Markdown"
     )
 
 async def verarbeite_stammdaten_aendern(update: Update, chat_id: int, text: str):
-    state = onboarding_data[chat_id]
-    schritt = state["schritt"]
-    feld = ONBOARDING_FELDER[schritt][0]
-    aktuell_wert = state.get("aktuell", {}).get(feld, "")
-    # "-" = Wert behalten
-    state["daten"][feld] = aktuell_wert if text.strip() == "-" else text.strip()
-    schritt += 1
-    state["schritt"] = schritt
-
-    if schritt < len(ONBOARDING_FELDER):
-        naechstes_feld = ONBOARDING_FELDER[schritt][0]
-        naechster_aktuell = state.get("aktuell", {}).get(naechstes_feld, "")
+    await update.message.reply_text("⏳ Verarbeite Änderung...")
+    try:
+        betrieb, _, _ = lese_sheets_daten()
+        ergebnis = erkenne_stammdaten_aenderung(text, betrieb)
+        if not ergebnis or not ergebnis.get("feld"):
+            await update.message.reply_text(
+                "❓ Ich konnte keine eindeutige Änderung erkennen.\n"
+                "Bitte formuliere es so: _'Stundensatz auf 60'_",
+                parse_mode="Markdown"
+            )
+            return
+        feld  = ergebnis["feld"]
+        wert  = ergebnis["wert"]
+        zelle = STAMMDATEN_FELDER_MAP.get(feld)
+        if not zelle:
+            await update.message.reply_text(f"❌ Unbekanntes Feld: {feld}")
+            return
+        gc = get_sheet_client()
+        gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Betriebsstamm_Agent").update(zelle, wert)
+        chat_modus[chat_id] = "normal"
+        feld_label = next((f[1].split("?")[0].replace("Was ist dein ","").replace("Wie lautet der ","").replace("Welcher ","").strip() for f in ONBOARDING_FELDER if f[0] == feld), feld)
         await update.message.reply_text(
-            f"✅\n\nFrage {schritt + 1} von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[schritt][1]}\n"
-            f"_(Aktuell: {naechster_aktuell or 'leer'})_",
+            f"✅ *{feld}* wurde auf *{wert}* aktualisiert.",
             parse_mode="Markdown"
         )
-    else:
-        await update.message.reply_text("⏳ Speichere Stammdaten...")
-        try:
-            schreibe_stammdaten(state["daten"])
-            chat_modus[chat_id] = "normal"
-            onboarding_data.pop(chat_id, None)
-            await update.message.reply_text("✅ Stammdaten wurden aktualisiert!")
-            await zeige_menu(update)
-        except Exception as e:
-            await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
+        await zeige_menu(update)
+    except Exception as e:
+        await update.message.reply_text(f"❌ Fehler: {e}")
 
 # ── /start Handler ────────────────────────────────────────────────────────────
 async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -602,6 +651,9 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Nr.: {ang_nr}\n\n"
                 f"Netto:  {eur(antwort.get('angebotspreis_netto',0))} EUR\n"
                 f"Brutto: {eur(antwort.get('brutto',0))} EUR\n\n"
+                f"🔧 Kalkulation: {betrieb.get('stundensatz','-')} €/Std · "
+                f"Aufschlag {betrieb.get('gewinnaufschlag','-')}% · "
+                f"Anfahrt {betrieb.get('anfahrtspauschale','-')} €\n\n"
                 f"Zum Freigeben antworte mit: freigeben\n\n"
                 f"⚠️ Entwürfe werden nach 90 Tagen automatisch gelöscht. "
                 f"Freigegebene Angebote werden 10 Jahre aufbewahrt."

@@ -96,14 +96,14 @@ def lese_sheets_daten():
     material_text = "\n".join(["|".join(r) for r in material_rows if any(r)])
     return betrieb, leistungen_text, material_text
 
-def speichere_angebot(angebot: dict) -> int:
+def speichere_angebot(angebot: dict, ang_nr: str) -> int:
     gc = get_sheet_client()
     wb = gc.open_by_key(GOOGLE_SHEET_ID)
     heute = datetime.now().strftime("%d.%m.%Y")
     gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
     angebote_sheet = wb.worksheet("📄 Angebote")
     angebote_sheet.append_row([
-        "", "", "", "", "Entwurf", heute, "", gueltig, "",
+        "", ang_nr, "", "", "Entwurf", heute, "", gueltig, "",
         angebot.get("gesamtstunden",""), angebot.get("arbeitskosten",""),
         angebot.get("materialkosten",""), angebot.get("anfahrt",""),
         angebot.get("zwischensumme_netto",""), angebot.get("gewinnaufschlag_betrag",""),
@@ -421,11 +421,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         if antwort.get("status") == "angebot":
-            zeile = speichere_angebot(antwort)
             jahr = datetime.now().strftime("%Y")
-            ang_nr = f"ANG-{jahr}-{zeile}"
             heute = datetime.now().strftime("%d.%m.%Y")
             gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
+            # Erst speichern um Zeilennummer zu bekommen, dann Nummer generieren und nachschreiben
+            zeile = speichere_angebot(antwort, "")
+            ang_nr = f"ANG-{jahr}-{zeile}"
+            # Angebotsnummer nachträglich in Spalte B eintragen
+            gc = get_sheet_client()
+            wb = gc.open_by_key(GOOGLE_SHEET_ID)
+            wb.worksheet("📄 Angebote").update_cell(zeile, 2, ang_nr)
             gespraech[chat_id] = []
             letztes_angebot[chat_id] = ang_nr
 

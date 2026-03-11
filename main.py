@@ -1,12 +1,12 @@
 """
 Maler-Agent — Telegram AI Angebots-Generator
-Fixes: Umlaute in PDF und Telegram, Anrede Herr/Frau
+Mit Onboarding, Menü, Stammdaten-Verwaltung
 """
 
 import os
+import re
 import json
 import logging
-import re
 import requests
 from datetime import datetime, timedelta
 from io import BytesIO
@@ -15,7 +15,7 @@ import anthropic
 import gspread
 from google.oauth2.service_account import Credentials
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+from telegram.ext import ApplicationBuilder, MessageHandler, CommandHandler, filters, ContextTypes
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
@@ -23,14 +23,6 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
-
-# ── Zahlenformatierung (deutsch) ──────────────────────────────────────────────
-def eur(wert) -> str:
-    """Formatiert float als deutschen Eurobetrag: 1.234,56"""
-    try:
-        return f"{float(wert):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
-    except (ValueError, TypeError):
-        return str(wert)
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -43,27 +35,47 @@ GROQ_API_KEY       = os.environ["GROQ_API_KEY"]
 GOOGLE_SHEET_ID    = os.environ["GOOGLE_SHEET_ID"]
 GOOGLE_CREDENTIALS = os.environ["GOOGLE_CREDENTIALS"]
 
-# Gesprächsspeicher + letzte Angebotsnummer pro Chat
-gespraech = {}
+# ── Zustandsspeicher pro Chat ─────────────────────────────────────────────────
+gespraech      = {}   # { chat_id: [verlauf] }
 letztes_angebot = {}  # { chat_id: "ANG-2026-X" }
+chat_modus     = {}   # { chat_id: "normal" | "onboarding" | "stammdaten_aendern" }
+onboarding_data = {}  # { chat_id: { schritt: int, daten: {} } }
 
-# ── Schriftart mit Umlaut-Unterstützung registrieren ─────────────────────────
+# Onboarding-Felder der Reihe nach
+ONBOARDING_FELDER = [
+    ("betriebsname",      "Wie lautet der Name deines Betriebs?"),
+    ("stundensatz",       "Was ist dein Stundensatz in EUR (netto)? z.B. 55"),
+    ("mwst",              "Welcher MwSt-Satz gilt? (normal: 19)"),
+    ("gewinnaufschlag",   "Welchen Gewinnaufschlag möchtest du in %? z.B. 15"),
+    ("mindestauftrag",    "Was ist dein Mindestauftragswert in EUR? z.B. 150"),
+    ("anfahrtspauschale", "Wie hoch ist deine Anfahrtspauschale in EUR? z.B. 25"),
+    ("strasse",           "Straße und Hausnummer deines Betriebs?"),
+    ("plz",               "PLZ deines Betriebs?"),
+    ("ort",               "Ort deines Betriebs?"),
+    ("telefon",           "Telefonnummer deines Betriebs?"),
+    ("email",             "E-Mail-Adresse deines Betriebs?"),
+]
+
+# ── Schriftart ────────────────────────────────────────────────────────────────
 def registriere_schriften():
-    schriften = [
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",       "DejaVu"),
-        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",   "DejaVu-Bold"),
-    ]
-    for pfad, name in schriften:
+    for pfad, name in [
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",      "DejaVu"),
+        ("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", "DejaVu-Bold"),
+    ]:
         if os.path.exists(pfad):
             pdfmetrics.registerFont(TTFont(name, pfad))
-            log.info(f"Schrift registriert: {name}")
-            return True
-    log.warning("DejaVu-Schrift nicht gefunden — Fallback auf Helvetica")
-    return False
+    return os.path.exists("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 
-UMLAUT_FONT_VERFUEGBAR = registriere_schriften()
-FONT_NORMAL = "DejaVu"      if UMLAUT_FONT_VERFUEGBAR else "Helvetica"
-FONT_BOLD   = "DejaVu-Bold" if UMLAUT_FONT_VERFUEGBAR else "Helvetica-Bold"
+UMLAUT_OK   = registriere_schriften()
+FONT_NORMAL = "DejaVu"      if UMLAUT_OK else "Helvetica"
+FONT_BOLD   = "DejaVu-Bold" if UMLAUT_OK else "Helvetica-Bold"
+
+# ── Zahlenformatierung ────────────────────────────────────────────────────────
+def eur(wert) -> str:
+    try:
+        return f"{float(wert):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return str(wert)
 
 # ── Google Sheets ─────────────────────────────────────────────────────────────
 def get_sheet_client():
@@ -96,6 +108,23 @@ def lese_sheets_daten():
     material_text = "\n".join(["|".join(r) for r in material_rows if any(r)])
     return betrieb, leistungen_text, material_text
 
+def ist_onboarding_noetig() -> bool:
+    """Prüft ob Betriebsstamm noch leer ist."""
+    try:
+        betrieb, _, _ = lese_sheets_daten()
+        return not betrieb.get("betriebsname", "").strip()
+    except:
+        return True
+
+def schreibe_stammdaten(daten: dict):
+    gc = get_sheet_client()
+    wb = gc.open_by_key(GOOGLE_SHEET_ID)
+    sheet = wb.worksheet("Betriebsstamm_Agent")
+    felder = ["betriebsname","stundensatz","mwst","gewinnaufschlag",
+              "mindestauftrag","anfahrtspauschale","strasse","plz","ort","telefon","email"]
+    werte = [daten.get(f, "") for f in felder]
+    sheet.update("A2:K2", [werte])
+
 def speichere_angebot(angebot: dict, ang_nr: str) -> int:
     gc = get_sheet_client()
     wb = gc.open_by_key(GOOGLE_SHEET_ID)
@@ -121,6 +150,17 @@ def speichere_angebot(angebot: dict, ang_nr: str) -> int:
             pos.get("positionspreis_netto",""),
         ], value_input_option="USER_ENTERED")
     return zeile
+
+def freigabe_angebot(ang_nr: str) -> bool:
+    gc = get_sheet_client()
+    wb = gc.open_by_key(GOOGLE_SHEET_ID)
+    sheet = wb.worksheet("📄 Angebote")
+    zellen = sheet.findall(ang_nr)
+    if not zellen:
+        return False
+    for zelle in zellen:
+        sheet.update_cell(zelle.row, 5, "Freigegeben")
+    return True
 
 # ── Groq Transkription ────────────────────────────────────────────────────────
 def transkribiere_audio(file_bytes: bytes, filename: str) -> str:
@@ -152,7 +192,6 @@ def parse_json_robust(raw: str) -> dict:
 # ── Claude API ────────────────────────────────────────────────────────────────
 def frage_claude(verlauf: list, betrieb: dict, leistungen: str, material: str) -> dict:
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-
     system = f"""Du bist ein Kalkulationsassistent für Malerbetriebe.
 
 BETRIEBSSTAMM:
@@ -185,21 +224,15 @@ VORGEHEN:
 1. Extrahiere alle bekannten Infos aus dem gesamten Verlauf
 2. Prüfe welche Pflichtfelder noch fehlen
 3. Fehlende Infos: Frage ALLE fehlenden Punkte einer Gruppe auf einmal
-   - Erst Gruppe A (Auftragsdaten), dann Gruppe B (Kundendaten)
 4. Alle Infos vorhanden: Erstelle Angebot
 
-ANREDE:
-Leite "Herr" oder "Frau" wenn möglich aus dem Namen oder Kontext ab (z.B. "Kai" → "Herr").
-Nur wenn eindeutig nicht erkennbar → frage danach als Teil der Kundendaten-Rückfrage.
+ANREDE: Leite "Herr" oder "Frau" aus dem Namen ab wenn möglich. Nur bei Unklarheit nachfragen.
 
-EINLEITUNGSTEXT:
-Schreibe NUR den Haupttext (z.B. "gerne unterbreiten wir Ihnen...").
-KEINE Anrede, KEIN Schluss — diese werden separat gesetzt.
+EINLEITUNGSTEXT: NUR Haupttext, keine Anrede, kein Schluss.
 
 ANTWORTFORMAT:
-
 Falls Informationen fehlen:
-{{"status": "rueckfrage", "frage": "Deine Rückfrage mit ALLEN fehlenden Punkten"}}
+{{"status": "rueckfrage", "frage": "..."}}
 
 Falls alle Infos vorhanden:
 {{"status": "angebot", "kunde_name": "...", "kunde_anrede": "Herr", "kunde_strasse": "...", "kunde_plz": "...", "kunde_ort": "...", "betreff": "...", "einleitungstext": "...", "gesamtstunden": 0.0, "arbeitskosten": 0.0, "materialkosten": 0.0, "anfahrt": 0.0, "zwischensumme_netto": 0.0, "gewinnaufschlag_betrag": 0.0, "angebotspreis_netto": 0.0, "mwst_betrag": 0.0, "brutto": 0.0, "positionen": [{{"pos_nr": 1, "leistungs_id": "L001", "beschreibung": "...", "einheit": "m²", "menge": 0.0, "gesamtstunden": 0.0, "materialkosten": 0.0, "arbeitskosten": 0.0, "positionspreis_netto": 0.0}}]}}
@@ -228,57 +261,40 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     h1     = ParagraphStyle("h", fontSize=12, leading=16, fontName=FONT_BOLD,   spaceAfter=6)
     story  = []
 
-    # ── Kopfzeile ──
-    betrieb_info = (
-        f"<b>{betrieb['betriebsname']}</b><br/>"
-        f"{betrieb.get('strasse','')}<br/>"
-        f"{betrieb.get('plz','')} {betrieb.get('ort','')}<br/>"
-        f"Tel: {betrieb.get('telefon','')}<br/>"
-        f"{betrieb.get('email','')}"
-    )
-    angebots_info = (
-        f"Angebotsnummer: {ang_nr}<br/>"
-        f"Datum: {heute}<br/>"
-        f"Gültig bis: {gueltig}"
-    )
-    kopf = Table([
-        [Paragraph(betrieb_info, bold), Paragraph(angebots_info, normal)],
-    ], colWidths=[W*0.55, W*0.45])
-    kopf.setStyle(TableStyle([
-        ("VALIGN",(0,0),(-1,-1),"TOP"),
-        ("BOTTOMPADDING",(0,0),(-1,-1),4),
-    ]))
+    betrieb_info = (f"<b>{betrieb['betriebsname']}</b><br/>"
+                    f"{betrieb.get('strasse','')}<br/>"
+                    f"{betrieb.get('plz','')} {betrieb.get('ort','')}<br/>"
+                    f"Tel: {betrieb.get('telefon','')}<br/>"
+                    f"{betrieb.get('email','')}")
+    angebots_info = (f"Angebotsnummer: {ang_nr}<br/>"
+                     f"Datum: {heute}<br/>"
+                     f"Gültig bis: {gueltig}")
+    kopf = Table([[Paragraph(betrieb_info, bold), Paragraph(angebots_info, normal)]],
+                 colWidths=[W*0.55, W*0.45])
+    kopf.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
     story.append(kopf)
     story.append(Spacer(1, 0.8*cm))
 
-    # ── Empfängeradresse ──
     story.append(Paragraph(f"<b>{angebot.get('kunde_name','')}</b>", bold))
     story.append(Paragraph(angebot.get("kunde_strasse",""), normal))
     story.append(Paragraph(f"{angebot.get('kunde_plz','')} {angebot.get('kunde_ort','')}", normal))
     story.append(Spacer(1, 0.7*cm))
 
-    # ── Betreff ──
     story.append(Paragraph(f"<b>Angebot – {angebot.get('betreff','')}</b>", h1))
     story.append(Spacer(1, 0.3*cm))
 
-    # ── Anrede (einmalig, korrekt) ──
-    anrede   = angebot.get("kunde_anrede", "Herr/Frau")
+    anrede  = angebot.get("kunde_anrede", "Herr/Frau")
     nachname = angebot.get("kunde_name","").split()[-1] if angebot.get("kunde_name") else ""
     story.append(Paragraph(f"Sehr geehrter {anrede} {nachname},", normal))
     story.append(Spacer(1, 0.3*cm))
     story.append(Paragraph(angebot.get("einleitungstext",""), normal))
     story.append(Spacer(1, 0.5*cm))
 
-    # ── Positionstabelle ──
     story.append(Paragraph("<b>Leistungsübersicht</b>", bold))
     story.append(Spacer(1, 0.2*cm))
-    pos_rows = [[
-        Paragraph("<b>Pos.</b>", bold),
-        Paragraph("<b>Leistungsbeschreibung</b>", bold),
-        Paragraph("<b>Einheit</b>", bold),
-        Paragraph("<b>Menge</b>", bold),
-        Paragraph("<b>Preis (EUR)</b>", bold),
-    ]]
+    pos_rows = [[Paragraph("<b>Pos.</b>", bold), Paragraph("<b>Leistungsbeschreibung</b>", bold),
+                 Paragraph("<b>Einheit</b>", bold), Paragraph("<b>Menge</b>", bold),
+                 Paragraph("<b>Preis (EUR)</b>", bold)]]
     for pos in angebot.get("positionen", []):
         pos_rows.append([
             Paragraph(str(pos.get("pos_nr","")), normal),
@@ -300,11 +316,10 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     story.append(pos_table)
     story.append(Spacer(1, 0.5*cm))
 
-    # ── Summentabelle ──
     mwst_satz = betrieb.get("mwst","19")
     summen_data = [
-        [Paragraph("Anfahrt:", normal),             Paragraph(f"{eur(angebot.get('anfahrt',0))} EUR", right)],
-        [Paragraph("Nettobetrag:", normal),         Paragraph(f"{eur(angebot.get('angebotspreis_netto',0))} EUR", right)],
+        [Paragraph("Anfahrt:", normal), Paragraph(f"{eur(angebot.get('anfahrt',0))} EUR", right)],
+        [Paragraph("Nettobetrag:", normal), Paragraph(f"{eur(angebot.get('angebotspreis_netto',0))} EUR", right)],
         [Paragraph(f"zzgl. {mwst_satz}% MwSt:", normal), Paragraph(f"{eur(angebot.get('mwst_betrag',0))} EUR", right)],
         [Paragraph("<b>Gesamtbetrag brutto:</b>", bold), Paragraph(f"<b>{eur(angebot.get('brutto',0))} EUR</b>", bold)],
     ]
@@ -317,22 +332,17 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     story.append(summen_table)
     story.append(Spacer(1, 0.7*cm))
 
-    # ── Konditionen ──
     story.append(Paragraph("<b>Konditionen & Hinweise</b>", bold))
     story.append(Spacer(1, 0.2*cm))
     k_table = Table([
-        [Paragraph("Zahlungsziel:", bold),   Paragraph("14 Tage nach Rechnungsstellung", normal)],
-        [Paragraph("Gültigkeit:", bold),     Paragraph(f"Dieses Angebot ist gültig bis zum {gueltig}.", normal)],
+        [Paragraph("Zahlungsziel:", bold), Paragraph("14 Tage nach Rechnungsstellung", normal)],
+        [Paragraph("Gültigkeit:", bold), Paragraph(f"Dieses Angebot ist gültig bis zum {gueltig}.", normal)],
         [Paragraph("Gewährleistung:", bold), Paragraph("5 Jahre gemäß BGB §634a.", normal)],
     ], colWidths=[3.5*cm, W-3.5*cm])
-    k_table.setStyle(TableStyle([
-        ("VALIGN",(0,0),(-1,-1),"TOP"),
-        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
-    ]))
+    k_table.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),
+                                  ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)]))
     story.append(k_table)
     story.append(Spacer(1, 0.7*cm))
-
-    # ── Schluss ──
     story.append(Paragraph("Mit freundlichen Grüßen", normal))
     story.append(Spacer(1, 1.2*cm))
     story.append(Paragraph(f"<b>{betrieb['betriebsname']}</b>", bold))
@@ -345,24 +355,141 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     buf.seek(0)
     return buf
 
-# ── Freigabe ──────────────────────────────────────────────────────────────────
-def freigabe_angebot(ang_nr: str) -> bool:
-    """Setzt Status im Angebote-Sheet auf 'Freigegeben'."""
-    gc = get_sheet_client()
-    wb = gc.open_by_key(GOOGLE_SHEET_ID)
-    sheet = wb.worksheet("📄 Angebote")
-    zellen = sheet.findall(ang_nr)
-    if not zellen:
-        return False
-    for zelle in zellen:
-        sheet.update_cell(zelle.row, 5, "Freigegeben")  # Spalte E = Status
-    return True
+# ── Menü ──────────────────────────────────────────────────────────────────────
+MENU_TEXT = """📋 *Hauptmenü*
 
-# ── Telegram Handler ──────────────────────────────────────────────────────────
+1️⃣ Angebot erstellen
+2️⃣ Stammdaten ansehen
+3️⃣ Stammdaten ändern
+4️⃣ Hilfe / Problem melden
+
+Antworte einfach mit der Nummer oder tippe dein Anliegen."""
+
+async def zeige_menu(update: Update):
+    await update.message.reply_text(MENU_TEXT, parse_mode="Markdown")
+
+async def zeige_stammdaten(update: Update):
+    try:
+        betrieb, _, _ = lese_sheets_daten()
+        text = (
+            f"📋 *Deine Stammdaten*\n\n"
+            f"🏢 Betrieb: {betrieb.get('betriebsname','-')}\n"
+            f"💶 Stundensatz: {betrieb.get('stundensatz','-')} EUR\n"
+            f"📊 MwSt: {betrieb.get('mwst','-')} %\n"
+            f"📈 Gewinnaufschlag: {betrieb.get('gewinnaufschlag','-')} %\n"
+            f"🚗 Anfahrt: {betrieb.get('anfahrtspauschale','-')} EUR\n"
+            f"💰 Mindestauftrag: {betrieb.get('mindestauftrag','-')} EUR\n\n"
+            f"📍 {betrieb.get('strasse','-')}, {betrieb.get('plz','-')} {betrieb.get('ort','-')}\n"
+            f"📞 {betrieb.get('telefon','-')}\n"
+            f"📧 {betrieb.get('email','-')}"
+        )
+        await update.message.reply_text(text, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Fehler beim Laden der Stammdaten: {e}")
+
+# ── Onboarding ────────────────────────────────────────────────────────────────
+async def starte_onboarding(update: Update, chat_id: int):
+    chat_modus[chat_id] = "onboarding"
+    onboarding_data[chat_id] = {"schritt": 0, "daten": {}}
+    await update.message.reply_text(
+        "👋 Willkommen beim Maler-Agent!\n\n"
+        "Ich richte deinen Betrieb jetzt ein. Das dauert nur 2 Minuten.\n\n"
+        f"Frage 1 von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[0][1]}"
+    )
+
+async def verarbeite_onboarding(update: Update, chat_id: int, text: str):
+    state = onboarding_data[chat_id]
+    schritt = state["schritt"]
+    feld = ONBOARDING_FELDER[schritt][0]
+    state["daten"][feld] = text
+    schritt += 1
+    state["schritt"] = schritt
+
+    if schritt < len(ONBOARDING_FELDER):
+        naechste_frage = ONBOARDING_FELDER[schritt][1]
+        await update.message.reply_text(
+            f"✅ Gespeichert!\n\nFrage {schritt + 1} von {len(ONBOARDING_FELDER)}: {naechste_frage}"
+        )
+    else:
+        # Alle Felder gesammelt → ins Sheet schreiben
+        await update.message.reply_text("⏳ Speichere Stammdaten...")
+        try:
+            schreibe_stammdaten(state["daten"])
+            chat_modus[chat_id] = "normal"
+            onboarding_data.pop(chat_id, None)
+            await update.message.reply_text(
+                f"🎉 Einrichtung abgeschlossen!\n\n"
+                f"Betrieb *{state['daten'].get('betriebsname','')}* ist jetzt bereit.\n\n"
+                f"Du kannst jetzt Angebote erstellen — einfach losschreiben oder:",
+                parse_mode="Markdown"
+            )
+            await zeige_menu(update)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
+
+# ── Stammdaten ändern ─────────────────────────────────────────────────────────
+async def starte_stammdaten_aendern(update: Update, chat_id: int):
+    chat_modus[chat_id] = "stammdaten_aendern"
+    onboarding_data[chat_id] = {"schritt": 0, "daten": {}}
+    # Aktuelle Werte vorab laden als Standardwerte
+    try:
+        betrieb, _, _ = lese_sheets_daten()
+        onboarding_data[chat_id]["aktuell"] = betrieb
+    except:
+        onboarding_data[chat_id]["aktuell"] = {}
+    aktuell = onboarding_data[chat_id]["aktuell"].get(ONBOARDING_FELDER[0][0], "")
+    await update.message.reply_text(
+        f"✏️ *Stammdaten ändern*\n\n"
+        f"Ich gehe alle Felder durch. Antworte mit dem neuen Wert oder schicke *–* um den aktuellen Wert zu behalten.\n\n"
+        f"Frage 1 von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[0][1]}\n"
+        f"_(Aktuell: {aktuell or 'leer'})_",
+        parse_mode="Markdown"
+    )
+
+async def verarbeite_stammdaten_aendern(update: Update, chat_id: int, text: str):
+    state = onboarding_data[chat_id]
+    schritt = state["schritt"]
+    feld = ONBOARDING_FELDER[schritt][0]
+    aktuell_wert = state.get("aktuell", {}).get(feld, "")
+    # "-" = Wert behalten
+    state["daten"][feld] = aktuell_wert if text.strip() == "-" else text.strip()
+    schritt += 1
+    state["schritt"] = schritt
+
+    if schritt < len(ONBOARDING_FELDER):
+        naechstes_feld = ONBOARDING_FELDER[schritt][0]
+        naechster_aktuell = state.get("aktuell", {}).get(naechstes_feld, "")
+        await update.message.reply_text(
+            f"✅\n\nFrage {schritt + 1} von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[schritt][1]}\n"
+            f"_(Aktuell: {naechster_aktuell or 'leer'})_",
+            parse_mode="Markdown"
+        )
+    else:
+        await update.message.reply_text("⏳ Speichere Stammdaten...")
+        try:
+            schreibe_stammdaten(state["daten"])
+            chat_modus[chat_id] = "normal"
+            onboarding_data.pop(chat_id, None)
+            await update.message.reply_text("✅ Stammdaten wurden aktualisiert!")
+            await zeige_menu(update)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
+
+# ── /start Handler ────────────────────────────────────────────────────────────
+async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    if ist_onboarding_noetig():
+        await starte_onboarding(update, chat_id)
+    else:
+        await update.message.reply_text("👋 Willkommen zurück!")
+        await zeige_menu(update)
+
+# ── Hauptnachricht Handler ────────────────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     nutzer_text = ""
 
+    # Text oder Sprache
     if update.message.voice or update.message.audio:
         await update.message.reply_text("🎤 Transkribiere...")
         try:
@@ -372,7 +499,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             nutzer_text = transkribiere_audio(bytes(audio_bytes), "audio.ogg")
             await update.message.reply_text(f"📝 {nutzer_text}")
         except Exception as e:
-            log.error(f"Transkriptionsfehler: {e}")
             await update.message.reply_text(f"❌ Transkriptionsfehler: {e}")
             return
     elif update.message.text:
@@ -381,32 +507,69 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❓ Bitte sende Text oder Sprachnachricht.")
         return
 
-    if chat_id not in gespraech:
-        gespraech[chat_id] = []
+    # ── Onboarding läuft ──
+    modus = chat_modus.get(chat_id, "normal")
+    if modus == "onboarding":
+        await verarbeite_onboarding(update, chat_id, nutzer_text)
+        return
+    if modus == "stammdaten_aendern":
+        await verarbeite_stammdaten_aendern(update, chat_id, nutzer_text)
+        return
 
-    # ── Freigabe-Befehl abfangen (mit oder ohne Nummer) ──
+    # ── Erster Start ohne /start ──
+    if chat_id not in chat_modus and ist_onboarding_noetig():
+        await starte_onboarding(update, chat_id)
+        return
+
+    # ── Menü-Trigger ──
+    text_lower = nutzer_text.lower().strip()
+    if text_lower in ["menü", "menu", "/menu", "hilfe", "help"] or text_lower in ["1","2","3","4"]:
+        if text_lower in ["1", "angebot erstellen"]:
+            await update.message.reply_text("💬 Beschreibe einfach das Angebot — Kunde, Leistung, Fläche.")
+            return
+        elif text_lower in ["2", "stammdaten ansehen"]:
+            await zeige_stammdaten(update)
+            return
+        elif text_lower in ["3", "stammdaten ändern"]:
+            await starte_stammdaten_aendern(update, chat_id)
+            return
+        elif text_lower in ["4", "hilfe", "help"]:
+            await update.message.reply_text(
+                "🆘 *Hilfe & Support*\n\n"
+                "Bei Problemen oder Fragen schreib eine E-Mail an:\n"
+                "support@maler-agent.de\n\n"
+                "Oder beschreibe dein Problem hier — ich leite es weiter.",
+                parse_mode="Markdown"
+            )
+            return
+        else:
+            await zeige_menu(update)
+            return
+
+    # ── Freigabe ──
     _freigabe_match = re.search(r'freigeben\s+(ANG-\d{4}-\d+)', nutzer_text, re.IGNORECASE)
-    _freigabe_wort = re.search(r'freigeben|freigabe|passt so|bitte freigeben', nutzer_text, re.IGNORECASE)
+    _freigabe_wort  = re.search(r'freigeben|freigabe|passt so|bitte freigeben', nutzer_text, re.IGNORECASE)
     if _freigabe_match:
-        ang_nr = _freigabe_match.group(1).upper()
+        ang_nr_f = _freigabe_match.group(1).upper()
     elif _freigabe_wort and chat_id in letztes_angebot:
-        ang_nr = letztes_angebot[chat_id]
+        ang_nr_f = letztes_angebot[chat_id]
     else:
-        ang_nr = None
+        ang_nr_f = None
 
-    if ang_nr:
+    if ang_nr_f:
         await update.message.reply_text("⏳ Setze Status auf Freigegeben...")
         try:
-            if freigabe_angebot(ang_nr):
-                await update.message.reply_text(f"✅ Angebot {ang_nr} wurde freigegeben.")
+            if freigabe_angebot(ang_nr_f):
+                await update.message.reply_text(f"✅ Angebot {ang_nr_f} wurde freigegeben.")
             else:
-                await update.message.reply_text(f"❌ Angebot {ang_nr} nicht gefunden. Bitte Nummer prüfen.")
+                await update.message.reply_text(f"❌ Angebot {ang_nr_f} nicht gefunden.")
         except Exception as e:
-            log.error(f"Freigabe-Fehler: {e}")
-            await update.message.reply_text(f"❌ Fehler bei Freigabe: {e}")
+            await update.message.reply_text(f"❌ Fehler: {e}")
         return
-    
 
+    # ── Angebot erstellen ──
+    if chat_id not in gespraech:
+        gespraech[chat_id] = []
     gespraech[chat_id].append({"role": "user", "content": nutzer_text})
     await update.message.reply_text("⚙️ Prüfe Anfrage...")
 
@@ -415,22 +578,21 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         antwort = frage_claude(gespraech[chat_id], betrieb, leistungen, material)
 
         if antwort.get("status") == "rueckfrage":
-            frage = antwort.get("frage", "Kannst du die Anfrage präzisieren?")
+            frage = antwort.get("frage","Kannst du die Anfrage präzisieren?")
             gespraech[chat_id].append({"role": "assistant", "content": frage})
             await update.message.reply_text(f"❓ {frage}")
             return
 
         if antwort.get("status") == "angebot":
-            jahr = datetime.now().strftime("%Y")
+            jahr  = datetime.now().strftime("%Y")
             heute = datetime.now().strftime("%d.%m.%Y")
             gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
-            # Erst speichern um Zeilennummer zu bekommen, dann Nummer generieren und nachschreiben
-            zeile = speichere_angebot(antwort, "")
+            # Platzhalter speichern um Zeile zu bekommen, dann Nummer generieren
+            zeile  = speichere_angebot(antwort, "")
             ang_nr = f"ANG-{jahr}-{zeile}"
-            # Angebotsnummer nachträglich in Spalte B eintragen
+            # Nummer nachschreiben
             gc = get_sheet_client()
-            wb = gc.open_by_key(GOOGLE_SHEET_ID)
-            wb.worksheet("📄 Angebote").update_cell(zeile, 2, ang_nr)
+            gc.open_by_key(GOOGLE_SHEET_ID).worksheet("📄 Angebote").update_cell(zeile, 2, ang_nr)
             gespraech[chat_id] = []
             letztes_angebot[chat_id] = ang_nr
 
@@ -468,6 +630,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     log.info("Maler-Agent startet...")
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", handle_start))
+    app.add_handler(CommandHandler("menu", lambda u, c: zeige_menu(u)))
     app.add_handler(MessageHandler(filters.ALL, handle_message))
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 

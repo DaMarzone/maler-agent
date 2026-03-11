@@ -443,10 +443,10 @@ STAMMDATEN_FELDER_MAP = {
     "strasse": "G2", "plz": "H2", "ort": "I2", "telefon": "J2", "email": "K2",
 }
 
-def erkenne_stammdaten_aenderung(text: str, betrieb: dict) -> dict | None:
-    """Nutzt Claude um zu erkennen welches Feld geändert werden soll."""
+def erkenne_stammdaten_aenderung(text: str, betrieb: dict) -> list | None:
+    """Nutzt Claude um zu erkennen welche Felder geändert werden sollen (auch mehrere)."""
     client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-    prompt = f"""Der Nutzer möchte Stammdaten ändern. Erkenne welches Feld geändert werden soll und welcher neue Wert gewünscht wird.
+    prompt = f"""Der Nutzer möchte Stammdaten ändern. Erkenne ALLE Felder die geändert werden sollen.
 
 Aktuelle Stammdaten:
 {json.dumps(betrieb, ensure_ascii=False)}
@@ -455,16 +455,22 @@ Verfügbare Felder: betriebsname, stundensatz, mwst, gewinnaufschlag, mindestauf
 
 Nutzernachricht: "{text}"
 
-Antworte NUR mit JSON: {{"feld": "feldname", "wert": "neuer_wert"}}
-Falls keine eindeutige Änderung erkennbar: {{"feld": null, "wert": null}}"""
+Antworte NUR mit JSON-Array: [{{"feld": "feldname", "wert": "neuer_wert"}}, ...]
+Falls keine eindeutige Änderung erkennbar: []"""
     try:
         msg = client.messages.create(
-            model="claude-sonnet-4-6", max_tokens=100,
+            model="claude-sonnet-4-6", max_tokens=200,
             messages=[{"role": "user", "content": prompt}]
         )
-        return parse_json_robust(msg.content[0].text)
+        raw = msg.content[0].text.strip()
+        # Array aus Antwort extrahieren
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start != -1 and end != -1:
+            return json.loads(raw[start:end+1])
+        return []
     except:
-        return None
+        return []
 
 async def starte_stammdaten_aendern(update: Update, chat_id: int):
     chat_modus[chat_id] = "stammdaten_aendern"
@@ -499,27 +505,40 @@ async def verarbeite_stammdaten_aendern(update: Update, chat_id: int, text: str)
     try:
         betrieb, _, _ = lese_sheets_daten()
         ergebnis = erkenne_stammdaten_aenderung(text, betrieb)
-        if not ergebnis or not ergebnis.get("feld"):
+        if not ergebnis:
             await update.message.reply_text(
                 "❓ Ich konnte keine eindeutige Änderung erkennen.\n"
                 "Bitte formuliere es so: _'Stundensatz auf 60'_",
                 parse_mode="Markdown"
             )
             return
-        feld  = ergebnis["feld"]
-        wert  = ergebnis["wert"]
-        zelle = STAMMDATEN_FELDER_MAP.get(feld)
-        if not zelle:
-            await update.message.reply_text(f"❌ Unbekanntes Feld: {feld}")
+        if not ergebnis:
+            await update.message.reply_text(
+                "❓ Ich konnte keine eindeutige Änderung erkennen.\n"
+                "Bitte formuliere es so: _'Stundensatz auf 60'_",
+                parse_mode="Markdown"
+            )
             return
         gc = get_sheet_client()
-        gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Betriebsstamm_Agent").update(zelle, wert)
+        sheet = gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Betriebsstamm_Agent")
+        bestaetigung = []
+        for item in ergebnis:
+            feld = item.get("feld")
+            wert = item.get("wert")
+            zelle = STAMMDATEN_FELDER_MAP.get(feld)
+            if not zelle:
+                continue
+            # Zellkoordinaten aus Notation (z.B. "B2" → row=2, col=2)
+            col = ord(zelle[0]) - ord("A") + 1
+            row = int(zelle[1:])
+            sheet.update_cell(row, col, wert)
+            bestaetigung.append(f"• *{feld}* → {wert}")
         chat_modus[chat_id] = "normal"
-        feld_label = next((f[1].split("?")[0].replace("Was ist dein ","").replace("Wie lautet der ","").replace("Welcher ","").strip() for f in ONBOARDING_FELDER if f[0] == feld), feld)
-        await update.message.reply_text(
-            f"✅ *{feld}* wurde auf *{wert}* aktualisiert.",
-            parse_mode="Markdown"
-        )
+        if bestaetigung:
+            await update.message.reply_text(
+                "✅ Folgende Änderungen wurden gespeichert:\n" + "\n".join(bestaetigung),
+                parse_mode="Markdown"
+            )
         await zeige_menu(update)
     except Exception as e:
         await update.message.reply_text(f"❌ Fehler: {e}")

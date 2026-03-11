@@ -22,6 +22,14 @@ from reportlab.lib.units import cm
 from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.enums import TA_RIGHT
+
+# ── Zahlenformatierung (deutsch) ──────────────────────────────────────────────
+def eur(wert) -> str:
+    """Formatiert float als deutschen Eurobetrag: 1.234,56"""
+    try:
+        return f"{float(wert):,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+    except (ValueError, TypeError):
+        return str(wert)
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 
@@ -274,7 +282,7 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
             Paragraph(pos.get("beschreibung",""), normal),
             Paragraph(pos.get("einheit",""), normal),
             Paragraph(str(pos.get("menge","")), normal),
-            Paragraph(f"{float(pos.get('positionspreis_netto',0)):.2f}", right),
+            Paragraph(eur(pos.get("positionspreis_netto",0)), right),
         ])
     pos_table = Table(pos_rows, colWidths=[1*cm, W*0.5, 2*cm, 2*cm, 2.5*cm])
     pos_table.setStyle(TableStyle([
@@ -292,12 +300,12 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     # ── Summentabelle ──
     mwst_satz = betrieb.get("mwst","19")
     summen_data = [
-        [Paragraph("Zwischensumme:", normal),      Paragraph(f"{float(angebot.get('zwischensumme_netto',0)):.2f} EUR", right)],
-        [Paragraph("Anfahrt:", normal),             Paragraph(f"{float(angebot.get('anfahrt',0)):.2f} EUR", right)],
-        [Paragraph("Gewinnaufschlag:", normal),     Paragraph(f"{float(angebot.get('gewinnaufschlag_betrag',0)):.2f} EUR", right)],
-        [Paragraph("Nettobetrag:", normal),         Paragraph(f"{float(angebot.get('angebotspreis_netto',0)):.2f} EUR", right)],
-        [Paragraph(f"zzgl. {mwst_satz}% MwSt:", normal), Paragraph(f"{float(angebot.get('mwst_betrag',0)):.2f} EUR", right)],
-        [Paragraph("<b>Gesamtbetrag brutto:</b>", bold), Paragraph(f"<b>{float(angebot.get('brutto',0)):.2f} EUR</b>", bold)],
+        [Paragraph("Zwischensumme:", normal),      Paragraph(f"{eur(angebot.get('zwischensumme_netto',0))} EUR", right)],
+        [Paragraph("Anfahrt:", normal),             Paragraph(f"{eur(angebot.get('anfahrt',0))} EUR", right)],
+        [Paragraph("Gewinnaufschlag:", normal),     Paragraph(f"{eur(angebot.get('gewinnaufschlag_betrag',0))} EUR", right)],
+        [Paragraph("Nettobetrag:", normal),         Paragraph(f"{eur(angebot.get('angebotspreis_netto',0))} EUR", right)],
+        [Paragraph(f"zzgl. {mwst_satz}% MwSt:", normal), Paragraph(f"{eur(angebot.get('mwst_betrag',0))} EUR", right)],
+        [Paragraph("<b>Gesamtbetrag brutto:</b>", bold), Paragraph(f"<b>{eur(angebot.get('brutto',0))} EUR</b>", bold)],
     ]
     summen_table = Table(summen_data, colWidths=[W*0.7, W*0.3])
     summen_table.setStyle(TableStyle([
@@ -386,8 +394,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"✅ Angebot erstellt — Status: Entwurf\n\n"
                 f"Betreff: {antwort.get('betreff','-')}\n\n"
                 f"Nr.: {ang_nr}\n\n"
-                f"Netto:  {antwort.get('angebotspreis_netto','-')} EUR\n"
-                f"Brutto: {antwort.get('brutto','-')} EUR\n\n"
+                f"Netto:  {eur(antwort.get('angebotspreis_netto',0))} EUR\n"
+                f"Brutto: {eur(antwort.get('brutto',0))} EUR\n\n"
                 f"Zum Freigeben antworte mit:\nfreigeben {ang_nr}"
             )
             await update.message.reply_text("📄 Erstelle PDF...")

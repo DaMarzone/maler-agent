@@ -36,10 +36,10 @@ GOOGLE_SHEET_ID    = os.environ["GOOGLE_SHEET_ID"]
 GOOGLE_CREDENTIALS = os.environ["GOOGLE_CREDENTIALS"]
 
 # ── Zustandsspeicher pro Chat ─────────────────────────────────────────────────
-gespraech      = {}   # { chat_id: [verlauf] }
-letztes_angebot = {}  # { chat_id: "ANG-2026-X" }
-chat_modus     = {}   # { chat_id: "normal" | "onboarding" | "stammdaten_aendern" }
-onboarding_data = {}  # { chat_id: { schritt: int, daten: {} } }
+gespraech       = {}   # { chat_id: [verlauf] }
+letztes_angebot = {}   # { chat_id: "ANG-2026-X" }
+chat_modus      = {}   # { chat_id: "normal" | "onboarding" | "stammdaten_aendern" }
+onboarding_data = {}   # { chat_id: { schritt: int, daten: {} } }
 
 # Standardwerte für Express-Onboarding
 EXPRESS_DEFAULTS = {
@@ -116,6 +116,8 @@ def lese_sheets_daten():
         "telefon":           stamm[9]  if len(stamm) > 9  else "",
         "email":             stamm[10] if len(stamm) > 10 else "",
     }
+
+    # Leistungen: alle Spalten werden übergeben (inkl. neue Spalte H: Mat.-Menge/Einheit)
     leistungen_rows = wb.worksheet("🔧 Leistungen").get_all_values()[1:]
     leistungen_text = "\n".join(["|".join(r) for r in leistungen_rows if any(r)])
 
@@ -126,12 +128,12 @@ def lese_sheets_daten():
         if not any(r):
             continue
         try:
-            ek   = float(str(r[4]).replace(",", ".")) if len(r) > 4 and r[4] else 0
-            aufschlag = float(str(r[5]).replace(",", ".").replace("%","")) if len(r) > 5 and r[5] else 0
-            vk   = round(ek * (1 + aufschlag), 4)
+            ek        = float(str(r[4]).replace(",", ".")) if len(r) > 4 and r[4] else 0
+            aufschlag = float(str(r[5]).replace(",", ".").replace("%", "")) if len(r) > 5 and r[5] else 0
+            vk        = round(ek * (1 + aufschlag), 4)
             verbrauch = r[7] if len(r) > 7 else ""
             material_zeilen.append(f"{r[0]}|{r[1]}|{r[2]}|{r[3]}|{ek}|{aufschlag}|{vk}|{verbrauch}")
-        except:
+        except Exception:
             material_zeilen.append("|".join(r))
     material_text = "\n".join(material_zeilen)
 
@@ -146,41 +148,46 @@ def ist_onboarding_noetig() -> bool:
     try:
         betrieb, _, _, _ = lese_sheets_daten()
         return not betrieb.get("betriebsname", "").strip()
-    except:
+    except Exception:
         return True
 
 def schreibe_stammdaten(daten: dict):
     gc = get_sheet_client()
     wb = gc.open_by_key(GOOGLE_SHEET_ID)
     sheet = wb.worksheet("Betriebsstamm_Agent")
-    felder = ["betriebsname","stundensatz","mwst","gewinnaufschlag",
-              "mindestauftrag","anfahrtspauschale","strasse","plz","ort","telefon","email"]
+    felder = ["betriebsname", "stundensatz", "mwst", "gewinnaufschlag",
+              "mindestauftrag", "anfahrtspauschale", "strasse", "plz", "ort", "telefon", "email"]
     werte = [daten.get(f, "") for f in felder]
     sheet.update("A2:K2", [werte])
 
 def speichere_angebot(angebot: dict, ang_nr: str) -> int:
     gc = get_sheet_client()
     wb = gc.open_by_key(GOOGLE_SHEET_ID)
-    heute = datetime.now().strftime("%d.%m.%Y")
+    heute  = datetime.now().strftime("%d.%m.%Y")
     gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
     angebote_sheet = wb.worksheet("📄 Angebote")
     angebote_sheet.append_row([
         "", ang_nr, "", "", "Entwurf", heute, "", gueltig, "",
-        angebot.get("gesamtstunden",""), angebot.get("arbeitskosten",""),
-        angebot.get("materialkosten",""), angebot.get("anfahrt",""),
-        angebot.get("zwischensumme_netto",""), angebot.get("gewinnaufschlag_betrag",""),
-        angebot.get("angebotspreis_netto",""), angebot.get("mwst_betrag",""),
-        angebot.get("brutto",""), angebot.get("einleitungstext",""),
+        angebot.get("gesamtstunden", ""),
+        angebot.get("arbeitskosten", ""),
+        angebot.get("materialkosten", ""),
+        angebot.get("anfahrt", ""),
+        angebot.get("zwischensumme_netto", ""),
+        angebot.get("gewinnaufschlag_betrag", ""),
+        angebot.get("angebotspreis_netto", ""),
+        angebot.get("mwst_betrag", ""),
+        angebot.get("brutto", ""),
+        angebot.get("einleitungstext", ""),
     ], value_input_option="USER_ENTERED")
     zeile = len(angebote_sheet.get_all_values())
     positionen_sheet = wb.worksheet("📝 Angebotspositionen")
     for pos in angebot.get("positionen", []):
         positionen_sheet.append_row([
-            "", zeile, pos.get("pos_nr",""), pos.get("leistungs_id",""),
-            pos.get("beschreibung",""), pos.get("einheit",""), pos.get("menge",""),
-            "", "", pos.get("gesamtstunden",""), "", "",
-            pos.get("materialkosten",""), pos.get("arbeitskosten",""),
-            pos.get("positionspreis_netto",""),
+            "", zeile, pos.get("pos_nr", ""), pos.get("leistungs_id", ""),
+            pos.get("beschreibung", ""), pos.get("einheit", ""), pos.get("menge", ""),
+            "", "", pos.get("gesamtstunden", ""), "", "",
+            pos.get("materialkosten", ""), pos.get("arbeitskosten", ""),
+            pos.get("positionspreis_netto", ""),
         ], value_input_option="USER_ENTERED")
     return zeile
 
@@ -224,9 +231,9 @@ def parse_json_robust(raw: str) -> dict:
             raw = raw[4:]
         raw = raw.strip()
     start = raw.find("{")
-    end = raw.rfind("}")
+    end   = raw.rfind("}")
     if start != -1 and end != -1:
-        raw = raw[start:end+1]
+        raw = raw[start:end + 1]
     log.info(f"CLAUDE_RAW: {raw[:300]}")
     return json.loads(raw)
 
@@ -243,11 +250,11 @@ MwSt-Satz: {betrieb['mwst']} %
 Anfahrtspauschale: {betrieb['anfahrtspauschale']} EUR
 Mindestauftragswert: {betrieb['mindestauftrag']} EUR
 
-LEISTUNGSKATALOG (Format: ID|Art|Kategorie|Einheit|Std_h|Material-ID|SF-Basis):
+LEISTUNGSKATALOG (Format: ID|Art|Kategorie|Einheit|Std_h|Material-Text|Material-ID|Mat-Menge/Einheit|SF-Basis|Mindestmenge|Maximalmenge|Notizen):
 {leistungen}
 
 MATERIALPREISE (Format: ID|Bezeichnung|Kategorie|Einheit|EK-Preis|Aufschlag|VK-Preis|Verbrauch_pro_m2):
-Verwende immer den VK-Preis (Spalte 7) für die Kalkulation, NICHT den EK-Preis.
+Verwende immer den VK-Preis (Spalte 7, Index 6) für die Kalkulation, NICHT den EK-Preis.
 {material}
 
 SCHWIERIGKEITSFAKTOREN (Format: ID|Bezeichnung|Multiplikator|Beschreibung):
@@ -257,9 +264,13 @@ Der Faktor wird auf die Stunden einer Position angewendet.
 {sf}
 
 KALKULATIONSREGELN:
-1. Stunden = Menge × Std_h_aus_Katalog × Schwierigkeitsfaktor
+1. Stunden     = Menge × Std_h × Schwierigkeitsfaktor
 2. Arbeitskosten = Stunden × Stundensatz
-3. Materialkosten = Menge × Verbrauch_pro_m2 × VK-Preis (aus Materialpreise-Sheet)
+3. Materialkosten = Menge × Mat-Menge/Einheit × VK-Preis
+   - Mat-Menge/Einheit steht in Spalte 8 (Index 7) des Leistungskatalogs
+   - Dieser Wert ist einheitenunabhängig: bei m²-Leistungen ist es Verbrauch pro m²,
+     bei Stück-Leistungen ist es Verbrauch pro Stück, bei lfd.m pro laufendem Meter
+   - Wenn Mat-Menge/Einheit = 0 oder Material-ID leer: Materialkosten = 0
 4. Positionspreis = Arbeitskosten + Materialkosten
 5. Zwischensumme = Summe aller Positionspreise + Anfahrt
 6. Gewinnaufschlag_Betrag = Zwischensumme × (Gewinnaufschlag% / 100)
@@ -312,7 +323,7 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     doc = SimpleDocTemplate(buf, pagesize=A4,
                             leftMargin=2*cm, rightMargin=2*cm,
                             topMargin=2*cm, bottomMargin=2*cm)
-    W = 17 * cm
+    W      = 17 * cm
     normal = ParagraphStyle("n", fontSize=9,  leading=13, fontName=FONT_NORMAL)
     bold   = ParagraphStyle("b", fontSize=9,  leading=13, fontName=FONT_BOLD)
     small  = ParagraphStyle("s", fontSize=8,  leading=11, fontName=FONT_NORMAL, textColor=colors.grey)
@@ -320,33 +331,34 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     h1     = ParagraphStyle("h", fontSize=12, leading=16, fontName=FONT_BOLD,   spaceAfter=6)
     story  = []
 
-    betrieb_info = (f"<b>{betrieb['betriebsname']}</b><br/>"
-                    f"{betrieb.get('strasse','')}<br/>"
-                    f"{betrieb.get('plz','')} {betrieb.get('ort','')}<br/>"
-                    f"Tel: {betrieb.get('telefon','')}<br/>"
-                    f"{betrieb.get('email','')}")
+    betrieb_info  = (f"<b>{betrieb['betriebsname']}</b><br/>"
+                     f"{betrieb.get('strasse','')}<br/>"
+                     f"{betrieb.get('plz','')} {betrieb.get('ort','')}<br/>"
+                     f"Tel: {betrieb.get('telefon','')}<br/>"
+                     f"{betrieb.get('email','')}")
     angebots_info = (f"Angebotsnummer: {ang_nr}<br/>"
                      f"Datum: {heute}<br/>"
                      f"Gültig bis: {gueltig}")
     kopf = Table([[Paragraph(betrieb_info, bold), Paragraph(angebots_info, normal)]],
                  colWidths=[W*0.55, W*0.45])
-    kopf.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),("BOTTOMPADDING",(0,0),(-1,-1),4)]))
+    kopf.setStyle(TableStyle([("VALIGN", (0, 0), (-1, -1), "TOP"),
+                               ("BOTTOMPADDING", (0, 0), (-1, -1), 4)]))
     story.append(kopf)
     story.append(Spacer(1, 0.8*cm))
 
     story.append(Paragraph(f"<b>{angebot.get('kunde_name','')}</b>", bold))
-    story.append(Paragraph(angebot.get("kunde_strasse",""), normal))
+    story.append(Paragraph(angebot.get("kunde_strasse", ""), normal))
     story.append(Paragraph(f"{angebot.get('kunde_plz','')} {angebot.get('kunde_ort','')}", normal))
     story.append(Spacer(1, 0.7*cm))
 
     story.append(Paragraph(f"<b>Angebot – {angebot.get('betreff','')}</b>", h1))
     story.append(Spacer(1, 0.3*cm))
 
-    anrede  = angebot.get("kunde_anrede", "Herr/Frau")
-    nachname = angebot.get("kunde_name","").split()[-1] if angebot.get("kunde_name") else ""
+    anrede   = angebot.get("kunde_anrede", "Herr/Frau")
+    nachname = angebot.get("kunde_name", "").split()[-1] if angebot.get("kunde_name") else ""
     story.append(Paragraph(f"Sehr geehrter {anrede} {nachname},", normal))
     story.append(Spacer(1, 0.3*cm))
-    story.append(Paragraph(angebot.get("einleitungstext",""), normal))
+    story.append(Paragraph(angebot.get("einleitungstext", ""), normal))
     story.append(Spacer(1, 0.5*cm))
 
     story.append(Paragraph("<b>Leistungsübersicht</b>", bold))
@@ -364,38 +376,45 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
         gp    = float(pos.get("positionspreis_netto", 0) or 0)
         ep    = round(gp / menge, 2) if menge else 0
         pos_rows.append([
-            Paragraph(str(pos.get("pos_nr","")), normal),
-            Paragraph(pos.get("beschreibung",""), normal),
-            Paragraph(pos.get("einheit",""), normal),
-            Paragraph(str(pos.get("menge","")), normal),
+            Paragraph(str(pos.get("pos_nr", "")), normal),
+            Paragraph(pos.get("beschreibung", ""), normal),
+            Paragraph(pos.get("einheit", ""), normal),
+            Paragraph(str(pos.get("menge", "")), normal),
             Paragraph(eur(ep), right),
             Paragraph(eur(gp), right),
         ])
     pos_table = Table(pos_rows, colWidths=[1*cm, W*0.42, 1.8*cm, 1.6*cm, 2.1*cm, 2.1*cm])
     pos_table.setStyle(TableStyle([
-        ("BACKGROUND",(0,0),(-1,0),colors.HexColor("#2E5D8E")),
-        ("TEXTCOLOR",(0,0),(-1,0),colors.white),
-        ("ROWBACKGROUNDS",(0,1),(-1,-1),[colors.white,colors.HexColor("#F5F5F5")]),
-        ("GRID",(0,0),(-1,-1),0.5,colors.HexColor("#DDDDDD")),
-        ("VALIGN",(0,0),(-1,-1),"TOP"),
-        ("TOPPADDING",(0,0),(-1,-1),5),("BOTTOMPADDING",(0,0),(-1,-1),5),
-        ("LEFTPADDING",(0,0),(-1,-1),6),("RIGHTPADDING",(0,0),(-1,-1),6),
+        ("BACKGROUND",    (0, 0), (-1, 0), colors.HexColor("#2E5D8E")),
+        ("TEXTCOLOR",     (0, 0), (-1, 0), colors.white),
+        ("ROWBACKGROUNDS",(0, 1), (-1,-1), [colors.white, colors.HexColor("#F5F5F5")]),
+        ("GRID",          (0, 0), (-1,-1), 0.5, colors.HexColor("#DDDDDD")),
+        ("VALIGN",        (0, 0), (-1,-1), "TOP"),
+        ("TOPPADDING",    (0, 0), (-1,-1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1,-1), 5),
+        ("LEFTPADDING",   (0, 0), (-1,-1), 6),
+        ("RIGHTPADDING",  (0, 0), (-1,-1), 6),
     ]))
     story.append(pos_table)
     story.append(Spacer(1, 0.5*cm))
 
-    mwst_satz = betrieb.get("mwst","19")
+    mwst_satz  = betrieb.get("mwst", "19")
     summen_data = [
-        [Paragraph("Anfahrt:", normal), Paragraph(f"{eur(angebot.get('anfahrt',0))} EUR", right)],
-        [Paragraph("Nettobetrag:", normal), Paragraph(f"{eur(angebot.get('angebotspreis_netto',0))} EUR", right)],
-        [Paragraph(f"zzgl. {mwst_satz}% MwSt:", normal), Paragraph(f"{eur(angebot.get('mwst_betrag',0))} EUR", right)],
-        [Paragraph("<b>Gesamtbetrag brutto:</b>", bold), Paragraph(f"<b>{eur(angebot.get('brutto',0))} EUR</b>", bold)],
+        [Paragraph("Anfahrt:", normal),
+         Paragraph(f"{eur(angebot.get('anfahrt', 0))} EUR", right)],
+        [Paragraph("Nettobetrag:", normal),
+         Paragraph(f"{eur(angebot.get('angebotspreis_netto', 0))} EUR", right)],
+        [Paragraph(f"zzgl. {mwst_satz}% MwSt:", normal),
+         Paragraph(f"{eur(angebot.get('mwst_betrag', 0))} EUR", right)],
+        [Paragraph("<b>Gesamtbetrag brutto:</b>", bold),
+         Paragraph(f"<b>{eur(angebot.get('brutto', 0))} EUR</b>", bold)],
     ]
     summen_table = Table(summen_data, colWidths=[W*0.7, W*0.3])
     summen_table.setStyle(TableStyle([
-        ("ALIGN",(1,0),(1,-1),"RIGHT"),
-        ("LINEABOVE",(0,-1),(-1,-1),1,colors.black),
-        ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3),
+        ("ALIGN",         (1, 0), (1, -1), "RIGHT"),
+        ("LINEABOVE",     (0,-1), (-1,-1), 1, colors.black),
+        ("TOPPADDING",    (0, 0), (-1,-1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1,-1), 3),
     ]))
     story.append(summen_table)
     story.append(Spacer(1, 0.7*cm))
@@ -403,12 +422,15 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
     story.append(Paragraph("<b>Konditionen & Hinweise</b>", bold))
     story.append(Spacer(1, 0.2*cm))
     k_table = Table([
-        [Paragraph("Zahlungsziel:", bold), Paragraph("14 Tage nach Rechnungsstellung", normal)],
-        [Paragraph("Gültigkeit:", bold), Paragraph(f"Dieses Angebot ist gültig bis zum {gueltig}.", normal)],
+        [Paragraph("Zahlungsziel:", bold),  Paragraph("14 Tage nach Rechnungsstellung", normal)],
+        [Paragraph("Gültigkeit:", bold),    Paragraph(f"Dieses Angebot ist gültig bis zum {gueltig}.", normal)],
         [Paragraph("Gewährleistung:", bold), Paragraph("5 Jahre gemäß BGB §634a.", normal)],
-    ], colWidths=[3.5*cm, W-3.5*cm])
-    k_table.setStyle(TableStyle([("VALIGN",(0,0),(-1,-1),"TOP"),
-                                  ("TOPPADDING",(0,0),(-1,-1),3),("BOTTOMPADDING",(0,0),(-1,-1),3)]))
+    ], colWidths=[3.5*cm, W - 3.5*cm])
+    k_table.setStyle(TableStyle([
+        ("VALIGN",        (0, 0), (-1,-1), "TOP"),
+        ("TOPPADDING",    (0, 0), (-1,-1), 3),
+        ("BOTTOMPADDING", (0, 0), (-1,-1), 3),
+    ]))
     story.append(k_table)
     story.append(Spacer(1, 0.7*cm))
     story.append(Paragraph("Mit freundlichen Grüßen", normal))
@@ -465,7 +487,7 @@ async def starte_onboarding(update: Update, chat_id: int):
         "⚡ *1 — Express-Start*\n"
         "Nur Betriebsname eingeben, Rest wird mit Standardwerten gefüllt:\n"
         "• Stundensatz: 55 €/Std\n"
-        "• Gewinnaufschlag: 15 %\n"
+        "• Gewinnaufschlag: 10 %\n"
         "• MwSt: 19 %\n"
         "• Anfahrt: 25 €\n"
         "• Mindestauftrag: 150 €\n"
@@ -480,21 +502,22 @@ async def verarbeite_onboarding(update: Update, chat_id: int, text: str):
     # Wahl: Express oder Vollständig
     if chat_modus.get(chat_id) == "onboarding_wahl":
         if text.strip() == "1":
-            # Express: nur Betriebsname fragen
             chat_modus[chat_id] = "onboarding_express"
             await update.message.reply_text(
                 "⚡ *Express-Start*\n\nWie lautet der Name deines Betriebs?",
                 parse_mode="Markdown"
             )
         elif text.strip() == "2":
-            # Vollständiges Setup
             chat_modus[chat_id] = "onboarding"
             await update.message.reply_text(
                 f"📋 Vollständiges Setup\n\n"
                 f"Frage 1 von {len(ONBOARDING_FELDER)}: {ONBOARDING_FELDER[0][1]}"
             )
         else:
-            await update.message.reply_text("Bitte antworte mit *1* (Express) oder *2* (Vollständig).", parse_mode="Markdown")
+            await update.message.reply_text(
+                "Bitte antworte mit *1* (Express) oder *2* (Vollständig).",
+                parse_mode="Markdown"
+            )
         return
 
     # Express: nur Betriebsname
@@ -517,9 +540,10 @@ async def verarbeite_onboarding(update: Update, chat_id: int, text: str):
             await update.message.reply_text(f"❌ Fehler beim Speichern: {e}")
         return
 
-    state = onboarding_data[chat_id]
+    # Vollständiges Onboarding
+    state   = onboarding_data[chat_id]
     schritt = state["schritt"]
-    feld = ONBOARDING_FELDER[schritt][0]
+    feld    = ONBOARDING_FELDER[schritt][0]
     state["daten"][feld] = text
     schritt += 1
     state["schritt"] = schritt
@@ -530,7 +554,6 @@ async def verarbeite_onboarding(update: Update, chat_id: int, text: str):
             f"✅ Gespeichert!\n\nFrage {schritt + 1} von {len(ONBOARDING_FELDER)}: {naechste_frage}"
         )
     else:
-        # Alle Felder gesammelt → ins Sheet schreiben
         await update.message.reply_text("⏳ Speichere Stammdaten...")
         try:
             schreibe_stammdaten(state["daten"])
@@ -572,14 +595,13 @@ Falls keine eindeutige Änderung erkennbar: []"""
             model="claude-sonnet-4-6", max_tokens=200,
             messages=[{"role": "user", "content": prompt}]
         )
-        raw = msg.content[0].text.strip()
-        # Array aus Antwort extrahieren
+        raw   = msg.content[0].text.strip()
         start = raw.find("[")
-        end = raw.rfind("]")
+        end   = raw.rfind("]")
         if start != -1 and end != -1:
-            return json.loads(raw[start:end+1])
+            return json.loads(raw[start:end + 1])
         return []
-    except:
+    except Exception:
         return []
 
 async def starte_stammdaten_aendern(update: Update, chat_id: int):
@@ -600,7 +622,7 @@ async def starte_stammdaten_aendern(update: Update, chat_id: int):
             f"• Telefon: {betrieb.get('telefon','-')}\n"
             f"• E-Mail: {betrieb.get('email','-')}"
         )
-    except:
+    except Exception:
         pass
     await update.message.reply_text(
         f"✏️ *Stammdaten ändern*\n\n"
@@ -622,23 +644,15 @@ async def verarbeite_stammdaten_aendern(update: Update, chat_id: int, text: str)
                 parse_mode="Markdown"
             )
             return
-        if not ergebnis:
-            await update.message.reply_text(
-                "❓ Ich konnte keine eindeutige Änderung erkennen.\n"
-                "Bitte formuliere es so: _'Stundensatz auf 60'_",
-                parse_mode="Markdown"
-            )
-            return
-        gc = get_sheet_client()
+        gc    = get_sheet_client()
         sheet = gc.open_by_key(GOOGLE_SHEET_ID).worksheet("Betriebsstamm_Agent")
         bestaetigung = []
         for item in ergebnis:
-            feld = item.get("feld")
-            wert = item.get("wert")
+            feld  = item.get("feld")
+            wert  = item.get("wert")
             zelle = STAMMDATEN_FELDER_MAP.get(feld)
             if not zelle:
                 continue
-            # Zellkoordinaten aus Notation (z.B. "B2" → row=2, col=2)
             col = ord(zelle[0]) - ord("A") + 1
             row = int(zelle[1:])
             sheet.update_cell(row, col, wert)
@@ -662,7 +676,9 @@ async def verarbeite_feedback(update: Update, chat_id: int, text: str):
     if modus == "feedback_typ":
         typ = TYP_MAP.get(text.strip(), None)
         if not typ:
-            await update.message.reply_text("Bitte antworte mit 1 (Problem), 2 (Idee) oder 3 (Frage).")
+            await update.message.reply_text(
+                "Bitte antworte mit 1 (Problem), 2 (Idee) oder 3 (Frage)."
+            )
             return
         chat_modus[chat_id] = f"feedback_{typ}"
         await update.message.reply_text(
@@ -671,7 +687,6 @@ async def verarbeite_feedback(update: Update, chat_id: int, text: str):
         )
         return
 
-    # Nachricht empfangen → speichern
     for prefix in ["feedback_Problem", "feedback_Idee", "feedback_Frage"]:
         if modus == prefix:
             typ = prefix.replace("feedback_", "")
@@ -697,15 +712,15 @@ async def handle_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Hauptnachricht Handler ────────────────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
+    chat_id    = update.effective_chat.id
     nutzer_text = ""
 
     # Text oder Sprache
     if update.message.voice or update.message.audio:
         await update.message.reply_text("🎤 Transkribiere...")
         try:
-            file_obj = update.message.voice or update.message.audio
-            tg_file = await context.bot.get_file(file_obj.file_id)
+            file_obj   = update.message.voice or update.message.audio
+            tg_file    = await context.bot.get_file(file_obj.file_id)
             audio_bytes = await tg_file.download_as_bytearray()
             nutzer_text = transkribiere_audio(bytes(audio_bytes), "audio.ogg")
             await update.message.reply_text(f"📝 {nutzer_text}")
@@ -718,7 +733,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❓ Bitte sende Text oder Sprachnachricht.")
         return
 
-    # ── Onboarding läuft ──
+    # ── Aktiven Modus prüfen ──
     modus = chat_modus.get(chat_id, "normal")
     if modus in ("onboarding", "onboarding_wahl", "onboarding_express"):
         await verarbeite_onboarding(update, chat_id, nutzer_text)
@@ -737,7 +752,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ── Menü-Trigger ──
     text_lower = nutzer_text.lower().strip()
-    if text_lower in ["menü", "menu", "/menu", "hilfe", "help"] or text_lower in ["1","2","3","4"]:
+    if text_lower in ["menü", "menu", "/menu", "hilfe", "help"] or text_lower in ["1", "2", "3", "4"]:
         if text_lower in ["1", "angebot erstellen"]:
             await update.message.reply_text("💬 Beschreibe einfach das Angebot — Kunde, Leistung, Fläche.")
             return
@@ -795,38 +810,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         antwort = frage_claude(gespraech[chat_id], betrieb, leistungen, material, sf)
 
         if antwort.get("status") == "rueckfrage":
-            frage = antwort.get("frage","Kannst du die Anfrage präzisieren?")
+            frage = antwort.get("frage", "Kannst du die Anfrage präzisieren?")
             gespraech[chat_id].append({"role": "assistant", "content": frage})
             await update.message.reply_text(f"❓ {frage}")
             return
 
         if antwort.get("status") == "angebot":
-            jahr  = datetime.now().strftime("%Y")
-            heute = datetime.now().strftime("%d.%m.%Y")
+            jahr    = datetime.now().strftime("%Y")
+            heute   = datetime.now().strftime("%d.%m.%Y")
             gueltig = (datetime.now() + timedelta(days=30)).strftime("%d.%m.%Y")
-            # Platzhalter speichern um Zeile zu bekommen, dann Nummer generieren
-            zeile  = speichere_angebot(antwort, "")
-            ang_nr = f"ANG-{jahr}-{zeile}"
-            # Nummer nachschreiben
+            zeile   = speichere_angebot(antwort, "")
+            ang_nr  = f"ANG-{jahr}-{zeile}"
             gc = get_sheet_client()
             gc.open_by_key(GOOGLE_SHEET_ID).worksheet("📄 Angebote").update_cell(zeile, 2, ang_nr)
             letztes_angebot[chat_id] = ang_nr
 
-            # Gesprächsverlauf NICHT löschen — Meister kann noch Korrekturen wünschen
-            # Angebot als Assistant-Nachricht im Verlauf vermerken damit Claude den Kontext kennt
+            # Gesprächsverlauf erhalten für mögliche Korrekturen
             gespraech[chat_id].append({
                 "role": "assistant",
-                "content": f"Ich habe Angebot {ang_nr} erstellt (Netto: {eur(antwort.get('angebotspreis_netto',0))} EUR). "
-                           f"Falls du Änderungen wünschst, beschreibe sie — ich erstelle dann ein neues Angebot. "
-                           f"Oder antworte mit 'freigeben' um das Angebot freizugeben."
+                "content": (
+                    f"Ich habe Angebot {ang_nr} erstellt "
+                    f"(Netto: {eur(antwort.get('angebotspreis_netto', 0))} EUR). "
+                    f"Falls du Änderungen wünschst, beschreibe sie — ich erstelle dann ein neues Angebot. "
+                    f"Oder antworte mit 'freigeben' um das Angebot freizugeben."
+                )
             })
 
             await update.message.reply_text(
                 f"✅ Angebot erstellt — Status: Entwurf\n\n"
                 f"Betreff: {antwort.get('betreff','-')}\n\n"
                 f"Nr.: {ang_nr}\n\n"
-                f"Netto:  {eur(antwort.get('angebotspreis_netto',0))} EUR\n"
-                f"Brutto: {eur(antwort.get('brutto',0))} EUR\n\n"
+                f"Netto:  {eur(antwort.get('angebotspreis_netto', 0))} EUR\n"
+                f"Brutto: {eur(antwort.get('brutto', 0))} EUR\n\n"
                 f"🔧 Kalkulation: {betrieb.get('stundensatz','-')} €/Std · "
                 f"Aufschlag {betrieb.get('gewinnaufschlag','-')}% · "
                 f"Anfahrt {betrieb.get('anfahrtspauschale','-')} €\n\n"

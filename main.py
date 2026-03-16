@@ -305,7 +305,15 @@ Falls Informationen fehlen:
 {{"status": "rueckfrage", "frage": "..."}}
 
 Falls alle Infos vorhanden:
-{{"status": "angebot", "kunde_name": "...", "kunde_anrede": "Herr", "kunde_strasse": "...", "kunde_plz": "...", "kunde_ort": "...", "betreff": "...", "einleitungstext": "...", "gesamtstunden": 0.0, "arbeitskosten": 0.0, "materialkosten": 0.0, "anfahrt": 0.0, "zwischensumme_netto": 0.0, "gewinnaufschlag_betrag": 0.0, "angebotspreis_netto": 0.0, "mwst_betrag": 0.0, "brutto": 0.0, "positionen": [{{"pos_nr": 1, "leistungs_id": "L001", "beschreibung": "...", "einheit": "m²", "menge": 0.0, "gesamtstunden": 0.0, "materialkosten": 0.0, "arbeitskosten": 0.0, "positionspreis_netto": 0.0}}]}}
+{{"status": "angebot", "kunde_name": "...", "kunde_anrede": "Herr", "kunde_strasse": "...", "kunde_plz": "...", "kunde_ort": "...", "betreff": "...", "einleitungstext": "...", "gesamtstunden": 0.0, "arbeitskosten": 0.0, "materialkosten": 0.0, "anfahrt": 0.0, "zwischensumme_netto": 0.0, "gewinnaufschlag_betrag": 0.0, "angebotspreis_netto": 0.0, "mwst_betrag": 0.0, "brutto": 0.0, "positionen": [{{"pos_nr": 1, "leistungs_id": "L001", "beschreibung": "...", "einheit": "m²", "menge": 0.0, "std_h": 0.0, "sf": 1.0, "gesamtstunden": 0.0, "stundensatz": 0.0, "arbeitskosten": 0.0, "mat_menge_einheit": 0.0, "mat_vk_preis": 0.0, "mat_bezeichnung": "...", "materialkosten": 0.0, "positionspreis_netto": 0.0}}]}}
+
+Felder pro Position:
+- std_h: Zeitwert aus Leistungskatalog (Std./Einheit)
+- sf: verwendeter Schwierigkeitsfaktor
+- stundensatz: verwendeter Stundensatz in EUR
+- mat_menge_einheit: Mat-Menge/Einheit aus Leistungskatalog
+- mat_vk_preis: VK-Preis des Materials in EUR
+- mat_bezeichnung: Kurzbezeichnung des Materials (z.B. "Wandfarbe weiß", "Holzfarbe") oder "" wenn kein Material
 
 Antworte NUR mit dem JSON. Keine Backticks, kein Markdown."""
 
@@ -375,10 +383,19 @@ def erstelle_pdf(angebot: dict, betrieb: dict, ang_nr: str, heute: str, gueltig:
         menge = float(pos.get("menge", 0) or 0)
         gp    = float(pos.get("positionspreis_netto", 0) or 0)
         ep    = round(gp / menge, 2) if menge else 0
+        # Materialbeschreibung für Kunden aufbauen
+        mat_bez   = pos.get("mat_bezeichnung", "").strip()
+        mat_menge = float(pos.get("mat_menge_einheit", 0) or 0)
+        einheit   = pos.get("einheit", "")
+        if mat_bez and mat_menge > 0:
+            mat_gesamt = round(menge * mat_menge, 2)
+            beschreibung = f"{pos.get('beschreibung', '')}\n<i><font size=8>inkl. Material: {mat_gesamt} × {mat_bez}</font></i>"
+        else:
+            beschreibung = pos.get("beschreibung", "")
         pos_rows.append([
             Paragraph(str(pos.get("pos_nr", "")), normal),
-            Paragraph(pos.get("beschreibung", ""), normal),
-            Paragraph(pos.get("einheit", ""), normal),
+            Paragraph(beschreibung, normal),
+            Paragraph(einheit, normal),
             Paragraph(str(pos.get("menge", "")), normal),
             Paragraph(eur(ep), right),
             Paragraph(eur(gp), right),
@@ -836,19 +853,75 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )
             })
 
+            # ── Detaillierte Kalkulationsübersicht aufbauen ──
+            stundensatz_val = float(betrieb.get('stundensatz', 55) or 55)
+            aufschlag_val   = float(betrieb.get('gewinnaufschlag', 10) or 10)
+            anfahrt_val     = float(antwort.get('anfahrt', 0) or 0)
+
+            kalk_zeilen = []
+            for pos in antwort.get("positionen", []):
+                p_nr    = pos.get("pos_nr", "")
+                p_bez   = pos.get("beschreibung", "")
+                p_menge = float(pos.get("menge", 0) or 0)
+                p_einh  = pos.get("einheit", "")
+                p_std_h = float(pos.get("std_h", 0) or 0)
+                p_sf    = float(pos.get("sf", 1.0) or 1.0)
+                p_stunden = float(pos.get("gesamtstunden", 0) or 0)
+                p_arbeit  = float(pos.get("arbeitskosten", 0) or 0)
+                p_mat     = float(pos.get("materialkosten", 0) or 0)
+                p_gp      = float(pos.get("positionspreis_netto", 0) or 0)
+                p_mat_bez = pos.get("mat_bezeichnung", "")
+                p_mat_menge = float(pos.get("mat_menge_einheit", 0) or 0)
+                p_mat_vk    = float(pos.get("mat_vk_preis", 0) or 0)
+
+                zeile = f"*Pos. {p_nr} — {p_bez}*\n"
+                zeile += f"  Menge: {p_menge} {p_einh}\n"
+                sf_hint = f" × SF {p_sf}" if p_sf != 1.0 else ""
+                zeile += f"  Arbeit: {p_menge} × {p_std_h}h{sf_hint} × {eur(stundensatz_val)}€ = {eur(p_arbeit)} EUR\n"
+                if p_mat > 0 and p_mat_bez:
+                    mat_gesamt = round(p_menge * p_mat_menge, 3)
+                    zeile += f"  Material: {p_menge} × {p_mat_menge} × {eur(p_mat_vk)}€ ({p_mat_bez}) = {eur(p_mat)} EUR\n"
+                elif p_mat == 0:
+                    zeile += f"  Material: — (keine Materialkosten)\n"
+                zeile += f"  → *{eur(p_gp)} EUR*"
+                kalk_zeilen.append(zeile)
+
+            kalk_text = "\n\n".join(kalk_zeilen)
+
+            # Summenzeilen
+            zw      = float(antwort.get('zwischensumme_netto', 0) or 0)
+            ga_bet  = float(antwort.get('gewinnaufschlag_betrag', 0) or 0)
+            netto   = float(antwort.get('angebotspreis_netto', 0) or 0)
+            mwst_b  = float(antwort.get('mwst_betrag', 0) or 0)
+            brutto  = float(antwort.get('brutto', 0) or 0)
+            mwst_s  = betrieb.get('mwst', '19')
+
+            summen_text = (
+                f"─────────────────────\n"
+                f"Positionen gesamt: {eur(zw - anfahrt_val)} EUR\n"
+                f"Anfahrt: {eur(anfahrt_val)} EUR\n"
+                f"Zwischensumme: {eur(zw)} EUR\n"
+                f"Gewinnaufschlag {aufschlag_val:.0f}%: +{eur(ga_bet)} EUR\n"
+                f"*Netto: {eur(netto)} EUR*\n"
+                f"MwSt {mwst_s}%: +{eur(mwst_b)} EUR\n"
+                f"*Brutto: {eur(brutto)} EUR*"
+            )
+
             await update.message.reply_text(
-                f"✅ Angebot erstellt — Status: Entwurf\n\n"
+                f"✅ *Angebot erstellt — Entwurf*\n\n"
+                f"Nr.: {ang_nr}\n"
                 f"Betreff: {antwort.get('betreff','-')}\n\n"
-                f"Nr.: {ang_nr}\n\n"
-                f"Netto:  {eur(antwort.get('angebotspreis_netto', 0))} EUR\n"
-                f"Brutto: {eur(antwort.get('brutto', 0))} EUR\n\n"
-                f"🔧 Kalkulation: {betrieb.get('stundensatz','-')} €/Std · "
-                f"Aufschlag {betrieb.get('gewinnaufschlag','-')}% · "
-                f"Anfahrt {betrieb.get('anfahrtspauschale','-')} €\n\n"
-                f"✏️ Anpassungen gewünscht? Beschreibe einfach was geändert werden soll.\n"
-                f"✅ Passt so? Antworte mit: freigeben\n\n"
-                f"⚠️ Entwürfe werden nach 90 Tagen automatisch gelöscht. "
-                f"Freigegebene Angebote werden 10 Jahre aufbewahrt."
+                f"🔧 *Kalkulation im Detail*\n"
+                f"Stundensatz: {betrieb.get('stundensatz','-')} €/Std · "
+                f"Aufschlag: {betrieb.get('gewinnaufschlag','-')}% · "
+                f"MwSt: {betrieb.get('mwst','-')}%\n\n"
+                f"{kalk_text}\n\n"
+                f"{summen_text}\n\n"
+                f"✏️ Anpassungen gewünscht? Beschreibe was geändert werden soll.\n"
+                f"✅ Passt so? Antworte mit: *freigeben*\n\n"
+                f"⚠️ Entwürfe werden nach 90 Tagen gelöscht. "
+                f"Freigegebene Angebote 10 Jahre aufbewahrt.",
+                parse_mode="Markdown"
             )
             await update.message.reply_text("📄 Erstelle PDF...")
             pdf_buf = erstelle_pdf(antwort, betrieb, ang_nr, heute, gueltig)
